@@ -2,6 +2,7 @@
  * Copyright 2012-2022 Great Scott Gadgets <info@greatscottgadgets.com>
  * Copyright 2012 Jared Boone
  * Copyright 2013 Benjamin Vernoux
+ * Modified for HackRF Edge in 2026 by HackRF Edge contributors.
  *
  * This file is part of HackRF.
  *
@@ -35,6 +36,14 @@ typedef struct {
 } transceiver_request_t;
 
 extern volatile transceiver_request_t transceiver_request;
+
+/* The M0 advances shortfall length in 32-byte quanta. Values above the last
+ * representable quantum would wrap before comparing greater-or-equal and
+ * therefore never fire; saturate those 31 wire values to the reachable max. */
+static inline uint32_t transceiver_clamp_shortfall_limit(uint32_t value)
+{
+	return value > UINT32_C(0xffffffe0) ? UINT32_C(0xffffffe0) : value;
+}
 
 void transceiver_usb_setup_complete(usb_endpoint_t* const endpoint);
 

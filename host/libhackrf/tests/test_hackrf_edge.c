@@ -1,4 +1,5 @@
-/* SPDX-License-Identifier: BSD-3-Clause */
+/* SPDX-FileCopyrightText: Copyright 2026 HackRF Edge contributors
+ * SPDX-License-Identifier: BSD-3-Clause */
 #include "hackrf.h"
 #include "hackrf_edge_internal.h"
 
@@ -600,10 +601,26 @@ static void test_set_config_validation(void)
 	result = hackrf_edge_set_config(mock_device(), &config);
 	CHECK(result == HACKRF_SUCCESS);
 	CHECK(mock_complete());
+
+	memset(&config, 0, sizeof(config));
+	config.profile = HACKRF_EDGE_PROFILE_LEGACY_C8;
+	config.flags = HACKRF_EDGE_CONFIG_RESET_COUNTERS;
+	mock_reset();
+	result = hackrf_edge_set_config(mock_device(), &config);
+	CHECK(result == HACKRF_ERROR_INVALID_PARAM);
+	CHECK(mock_complete());
+
+	config.flags = 0;
+	config.input_sample_rate_hz = 8000000;
+	mock_reset();
+	result = hackrf_edge_set_config(mock_device(), &config);
+	CHECK(result == HACKRF_ERROR_INVALID_PARAM);
+	CHECK(mock_complete());
 }
 
 static void test_reset_and_parameters(void)
 {
+	unsigned char status_bytes[128];
 	hackrf_edge_capabilities capabilities;
 	hackrf_edge_config config;
 	hackrf_edge_status status;
@@ -614,6 +631,24 @@ static void test_reset_and_parameters(void)
 	result = hackrf_edge_reset(mock_device());
 	CHECK(result == HACKRF_SUCCESS);
 	CHECK(mock_complete());
+
+	build_status(status_bytes);
+	put_u32(status_bytes + 16, HACKRF_EDGE_ERROR_BUSY);
+	refresh_crc(status_bytes, 124);
+	mock_reset();
+	mock_add_output(4, 0, HACKRF_EDGE_USB_ERROR_PIPE, NULL);
+	mock_add_input(1, 128, 128, status_bytes);
+	result = hackrf_edge_reset(mock_device());
+	CHECK(result == HACKRF_ERROR_BUSY);
+	CHECK(mock_complete());
+
+	/* A non-stall transport failure must not consult a stale BUSY status latch. */
+	mock_reset();
+	mock_add_output(4, 0, -7, NULL);
+	mock_add_input(1, 128, 128, status_bytes);
+	result = hackrf_edge_reset(mock_device());
+	CHECK(result == HACKRF_ERROR_LIBUSB);
+	CHECK(mock_step_index == 1);
 
 	CHECK(hackrf_edge_get_capabilities(NULL, &capabilities) ==
 	      HACKRF_ERROR_INVALID_PARAM);

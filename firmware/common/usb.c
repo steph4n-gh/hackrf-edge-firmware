@@ -1,6 +1,7 @@
 /*
  * Copyright 2012-2022 Great Scott Gadgets <info@greatscottgadgets.com>
  * Copyright 2012 Jared Boone
+ * Modified for HackRF Edge in 2026 by HackRF Edge contributors.
  *
  * This file is part of HackRF.
  *
@@ -634,7 +635,11 @@ static void usb_check_for_transfer_events(void)
 	}
 }
 
-void usb0_isr(void)
+#ifndef USB0_ISR_NAME
+#define USB0_ISR_NAME usb0_isr
+#endif
+
+void USB0_ISR_NAME(void)
 {
 	const uint32_t status = usb_get_status();
 

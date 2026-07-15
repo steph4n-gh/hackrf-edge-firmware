@@ -2,6 +2,7 @@
  * Copyright 2012-2022 Great Scott Gadgets <info@greatscottgadgets.com>
  * Copyright 2012 Jared Boone
  * Copyright 2013 Ben Gamari
+ * Modified for HackRF Edge in 2026 by HackRF Edge contributors.
  *
  * This file is part of HackRF.
  *
@@ -74,6 +75,9 @@ int usb_transfer_schedule_block(
 	void* const user_data);
 
 int usb_transfer_schedule_ack(const usb_endpoint_t* const endpoint);
+
+unsigned int usb_transfer_completed_length(
+	const usb_endpoint_t* const endpoint);
 
 void usb_queue_init(usb_queue_t* const queue);
 

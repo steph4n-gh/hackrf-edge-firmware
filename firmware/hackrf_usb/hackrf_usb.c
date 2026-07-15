@@ -3,6 +3,7 @@
  * Copyright 2012 Jared Boone
  * Copyright 2013 Benjamin Vernoux
  * Copyright 2024 Bernd Herzog
+ * Modified for HackRF Edge in 2026 by HackRF Edge contributors.
  *
  * This file is part of HackRF.
  *
@@ -74,6 +75,7 @@
 
 #include "usb_api_adc.h"
 #include "usb_api_board_info.h"
+#include "usb_api_edge.h"
 #include "usb_api_m0_state.h"
 #include "usb_api_operacake.h"
 #include "usb_api_register.h"
@@ -194,6 +196,13 @@ usb_request_status_t usb_vendor_request(
 {
 	usb_request_status_t status = USB_REQUEST_STATUS_STALL;
 
+	/* Edge intentionally uses a sparse request number outside the upstream
+	 * sequential table. Keeping it out of the array avoids allocating 0xe1
+	 * handler entries and preserves every existing request index. */
+	if (endpoint->setup.request == EDGE_VENDOR_REQUEST) {
+		return usb_vendor_request_edge(endpoint, stage);
+	}
+
 	if (endpoint->setup.request < vendor_request_handler_count) {
 		usb_request_handler_fn handler =
 			vendor_request_handler[endpoint->setup.request];
@@ -216,7 +225,8 @@ void usb_configuration_changed(usb_device_t* const device)
 {
 	/* Reset transceiver to idle state until other commands are received */
 	request_transceiver_mode(TRANSCEIVER_MODE_OFF);
-	if (device->configuration->number == 1) {
+	edge_reset_state();
+	if (device->configuration != NULL && device->configuration->number == 1) {
 		// transceiver configuration
 		led_on(LED1);
 	} else {
@@ -418,6 +428,10 @@ void radio_changed(const uint32_t changed)
 			radio_reg_read(&radio, RADIO_BANK_APPLIED, RADIO_BIAS_TEE);
 		hackrf_ui()->set_antenna_bias(enable);
 	}
+
+	/* Record applied transitions only after the radio layer has committed
+	 * them. Precision RX quarantines buffered samples across these changes. */
+	edge_radio_changed(changed);
 }
 
 int main(void)

@@ -2553,6 +2553,8 @@ extern ADDAPI int ADDCALL hackrf_edge_set_config(
 /**
  * Reset only Edge state to the canonical legacy receive profile.
  * This does not reset the MCU or other HackRF configuration.
+ * Firmware returns @ref HACKRF_ERROR_BUSY while the existing transceiver API
+ * still owns RX or TX; stop that activation and retry.
  * @ingroup edge
  */
 extern ADDAPI int ADDCALL hackrf_edge_reset(hackrf_device* device);

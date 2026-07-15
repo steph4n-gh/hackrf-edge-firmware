@@ -204,6 +204,7 @@ static const uint16_t rad1o_usb_pid = 0xcc15;
 static uint16_t open_devices = 0;
 
 static int create_transfer_thread(hackrf_device* device);
+static int hackrf_stop_cmd(hackrf_device* device);
 
 static libusb_context* g_libusb_context = NULL;
 int last_libusb_error = LIBUSB_SUCCESS;
@@ -370,7 +371,7 @@ static int prepare_transfers(
 	const uint_fast8_t endpoint_address,
 	libusb_transfer_cb_fn callback)
 {
-	int error;
+	int error = 0;
 	uint32_t transfer_index;
 	uint32_t ready_transfers = 0;
 
@@ -455,6 +456,12 @@ static int prepare_transfers(
 				last_libusb_error = error;
 			}
 		}
+	} else {
+		/* A submit failure can occur after earlier transfers were accepted.
+		 * Publish that partial ownership so the start-path rollback can cancel
+		 * and drain those transfers before it requests device mode OFF. */
+		device->streaming = false;
+		device->transfers_setup = device->active_transfers > 0;
 	}
 
 	// Now we can release the transfer lock.
@@ -2350,6 +2357,15 @@ int ADDCALL hackrf_start_rx(
 	result = hackrf_set_transceiver_mode(device, HACKRF_TRANSCEIVER_MODE_RECEIVE);
 	if (result == HACKRF_SUCCESS) {
 		result = prepare_setup_transfers(device, endpoint_address, callback);
+		if (result != HACKRF_SUCCESS) {
+			/* The mode request precedes host transfer setup. If setup fails,
+			 * always undo the device-side RX activation; Edge one-shot state and
+			 * any raw ADC stream must not survive a failed start call. */
+			if (transfers_check_setup(device)) {
+				(void) cancel_transfers(device);
+			}
+			(void) hackrf_stop_cmd(device);
+		}
 	}
 	return result;
 }
@@ -2371,14 +2387,12 @@ static int hackrf_stop_cmd(hackrf_device* device)
  */
 int ADDCALL hackrf_stop_rx(hackrf_device* device)
 {
-	int result;
-
-	result = cancel_transfers(device);
-	if (result != HACKRF_SUCCESS) {
-		return result;
+	const int cancel_result = cancel_transfers(device);
+	const int stop_result = hackrf_stop_cmd(device);
+	if (stop_result != HACKRF_SUCCESS) {
+		return stop_result;
 	}
-
-	return hackrf_stop_cmd(device);
+	return cancel_result;
 }
 
 int ADDCALL hackrf_start_tx(
@@ -2395,6 +2409,12 @@ int ADDCALL hackrf_start_tx(
 	if (result == HACKRF_SUCCESS) {
 		device->tx_ctx = tx_ctx;
 		result = prepare_setup_transfers(device, endpoint_address, callback);
+		if (result != HACKRF_SUCCESS) {
+			if (transfers_check_setup(device)) {
+				(void) cancel_transfers(device);
+			}
+			(void) hackrf_stop_cmd(device);
+		}
 	}
 	return result;
 }
@@ -3223,6 +3243,12 @@ int ADDCALL hackrf_start_rx_sweep(
 	if (HACKRF_SUCCESS == result) {
 		device->rx_ctx = rx_ctx;
 		result = prepare_setup_transfers(device, endpoint_address, callback);
+		if (result != HACKRF_SUCCESS) {
+			if (transfers_check_setup(device)) {
+				(void) cancel_transfers(device);
+			}
+			(void) hackrf_stop_cmd(device);
+		}
 	}
 	return result;
 }

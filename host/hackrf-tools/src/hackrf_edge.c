@@ -1,4 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-FileCopyrightText: Copyright 2026 HackRF Edge contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Read and explicitly configure the experimental HackRF Edge v1 protocol.
  */

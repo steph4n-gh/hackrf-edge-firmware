@@ -2,6 +2,7 @@
  * Copyright 2012-2022 Great Scott Gadgets <info@greatscottgadgets.com>
  * Copyright 2012 Jared Boone
  * Copyright 2013 Ben Gamari
+ * Modified for HackRF Edge in 2026 by HackRF Edge contributors.
  *
  * This file is part of HackRF.
  *
@@ -197,6 +198,19 @@ int usb_transfer_schedule_block(
 int usb_transfer_schedule_ack(const usb_endpoint_t* const endpoint)
 {
 	return usb_transfer_schedule_block(endpoint, 0, 0, NULL, NULL);
+}
+
+unsigned int usb_transfer_completed_length(
+	const usb_endpoint_t* const endpoint)
+{
+	const usb_transfer_t* const transfer = endpoint_queue(endpoint)->active;
+	if (transfer == NULL) {
+		return 0;
+	}
+	const unsigned int remaining =
+		(transfer->td.total_bytes & USB_TD_DTD_TOKEN_TOTAL_BYTES_MASK) >>
+		USB_TD_DTD_TOKEN_TOTAL_BYTES_SHIFT;
+	return transfer->maximum_length - remaining;
 }
 
 /* Called when an endpoint might have completed a transfer */

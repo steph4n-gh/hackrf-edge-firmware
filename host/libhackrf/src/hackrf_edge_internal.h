@@ -1,4 +1,5 @@
-/* SPDX-License-Identifier: BSD-3-Clause */
+/* SPDX-FileCopyrightText: Copyright 2026 HackRF Edge contributors
+ * SPDX-License-Identifier: BSD-3-Clause */
 #ifndef HACKRF_EDGE_INTERNAL_H
 #define HACKRF_EDGE_INTERNAL_H
 

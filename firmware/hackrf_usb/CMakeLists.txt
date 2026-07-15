@@ -1,4 +1,5 @@
 # Copyright 2012 Jared Boone <jared@sharebrained.com>
+# Modified for HackRF Edge in 2026 by HackRF Edge contributors.
 #
 # This file is part of HackRF.
 #
@@ -24,6 +25,41 @@ set(CMAKE_TOOLCHAIN_FILE ../toolchain-arm-cortex-m.cmake)
 project(hackrf_usb C)
 
 include(../hackrf-common.cmake)
+
+option(HACKRF_EDGE_LTO "Use link-time optimization for the M4 firmware" ON)
+set(HACKRF_EDGE_M4_EXTRA_FLAGS "" CACHE STRING
+	"Additional size-tuning flags for HackRF M4 compilation and linking")
+
+# common/usb.c is also built by PortaPack and other firmware. Rename its ISR
+# only in HackRF USB so the non-LTO vector wrapper can call the implementation
+# without changing those other targets' public interrupt symbol.
+set(CFLAGS_M4
+	"${CFLAGS_M4} -DUSB0_ISR_NAME=usb0_isr_impl -DHACKRF_EXTERNAL_INTERRUPT_HANDLERS=1")
+set(CFLAGS_M4_RAM
+	"${CFLAGS_M4_RAM} -DUSB0_ISR_NAME=usb0_isr_impl -DHACKRF_EXTERNAL_INTERRUPT_HANDLERS=1")
+
+if(HACKRF_EDGE_M4_EXTRA_FLAGS)
+	set(CFLAGS_M4 "${CFLAGS_M4} ${HACKRF_EDGE_M4_EXTRA_FLAGS}")
+	set(CFLAGS_M4_RAM "${CFLAGS_M4_RAM} ${HACKRF_EDGE_M4_EXTRA_FLAGS}")
+	set(LDFLAGS_M4 "${LDFLAGS_M4} ${HACKRF_EDGE_M4_EXTRA_FLAGS}")
+	set(LDFLAGS_M4_RAM "${LDFLAGS_M4_RAM} ${HACKRF_EDGE_M4_EXTRA_FLAGS}")
+endif()
+
+if(HACKRF_EDGE_LTO)
+	# Keep the timing-audited M0 assembly untouched. Whole-program M4 LTO
+	# recovers enough flash for Edge plus the stock one-megabyte PortaPack
+	# image without deleting established applications or changing the ABI.
+	# The interrupt vector table lives in non-LTO libopencm3. Explicit roots
+	# keep GCC's LTO plugin from resolving its weak aliases before seeing the
+	# strong application handlers. check_interrupt_handlers.py verifies both
+	# the symbol bindings and the final vector entries after every link.
+	set(CFLAGS_M4 "${CFLAGS_M4} -flto")
+	set(CFLAGS_M4_RAM "${CFLAGS_M4_RAM} -flto")
+	set(EDGE_ISR_ROOTS
+		"-Wl,-u,dma_isr,-u,usb0_isr,-u,sys_tick_handler,-u,hard_fault_handler,-u,mem_manage_handler,-u,bus_fault_handler,-u,usage_fault_handler")
+	set(LDFLAGS_M4 "${LDFLAGS_M4} -flto ${EDGE_ISR_ROOTS}")
+	set(LDFLAGS_M4_RAM "${LDFLAGS_M4_RAM} -flto ${EDGE_ISR_ROOTS}")
+endif()
 
 add_custom_command(
 	OUTPUT ${PATH_HACKRF_CPLD_DATA_C}
@@ -54,6 +90,8 @@ set(SRC_M4
 	usb_descriptor.c
 	usb_device.c
 	usb_endpoint.c
+	interrupt_handlers.c
+	usb_api_edge.c
 	usb_api_board_info.c
 	usb_api_m0_state.c
 	usb_api_register.c
@@ -71,6 +109,14 @@ set(SRC_M4
 	"${PATH_HACKRF_FIRMWARE_COMMON}/operacake.c"
 	"${PATH_HACKRF_FIRMWARE_COMMON}/operacake_sctimer.c"
 )
+
+if(HACKRF_EDGE_LTO)
+	# libopencm3's vector table refers to weak aliases from a non-LTO archive.
+	# Keep tiny strong wrappers outside the LTO partition so GNU ld resolves
+	# those aliases correctly; the wrappers root their LTO implementation calls.
+	set_source_files_properties(
+		interrupt_handlers.c PROPERTIES COMPILE_FLAGS "-fno-lto")
+endif()
 
 set(SRC_M0 sgpio_m0.s)
 
@@ -141,3 +187,17 @@ if(BOARD STREQUAL "RAD1O")
 endif()
 
 DeclareTargets()
+
+# A successful link is not sufficient under LTO: without explicit rooting,
+# GNU ld can silently leave weak blocking/null handlers in the vector table.
+# Validate all three HackRF M4 variants, including their actual vector words.
+foreach(variant "" "_ram" "_dfu")
+	add_custom_command(
+		TARGET hackrf_usb${variant}.elf
+		POST_BUILD
+		COMMAND python3
+			${CMAKE_CURRENT_SOURCE_DIR}/check_interrupt_handlers.py
+			--objcopy ${CMAKE_OBJCOPY}
+			--elf $<TARGET_FILE:hackrf_usb${variant}.elf>
+		VERBATIM)
+endforeach()

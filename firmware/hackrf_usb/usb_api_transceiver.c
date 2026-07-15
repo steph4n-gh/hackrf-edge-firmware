@@ -3,6 +3,7 @@
  * Copyright 2012 Jared Boone
  * Copyright 2013 Benjamin Vernoux
  * Copyright 2024 Bernd Herzog
+ * Modified for HackRF Edge in 2026 by HackRF Edge contributors.
  *
  * This file is part of HackRF.
  *
@@ -50,6 +51,8 @@
 
 #include "usb_buffer.h"
 #include "usb_endpoint.h"
+#include "usb_api_edge.h"
+#include "edge_transport.h"
 
 #define USB_TRANSFER_SIZE 0x4000
 #define DMA_TRANSFER_SIZE 0x2000
@@ -62,6 +65,15 @@
 bool auto_tx_flush = true;
 
 volatile uint32_t dma_started, dma_pending, usb_started, usb_completed;
+
+static edge_transport_state_t edge_transport;
+static uint32_t edge_dma_source_offset;
+static uint32_t edge_dma_destination_offset;
+static uint32_t edge_dma_remaining;
+static uint64_t edge_previous_total_shortfall;
+static uint32_t edge_previous_shortfall_count;
+static bool edge_quarantine_pending;
+static uint32_t edge_activation_epoch;
 
 typedef struct {
 	uint32_t freq_mhz;
@@ -350,6 +362,7 @@ void request_transceiver_mode(transceiver_mode_t mode)
 	usb_endpoint_flush(&usb_endpoint_bulk_in);
 	usb_endpoint_flush(&usb_endpoint_bulk_out);
 
+	edge_transceiver_request_superseded(mode);
 	transceiver_request.mode = mode;
 	transceiver_request.seq++;
 }
@@ -443,7 +456,7 @@ usb_request_status_t usb_vendor_request_set_tx_underrun_limit(
 {
 	if (stage == USB_TRANSFER_STAGE_SETUP) {
 		uint32_t value = (endpoint->setup.index << 16) + endpoint->setup.value;
-		_tx_underrun_limit = value;
+		_tx_underrun_limit = transceiver_clamp_shortfall_limit(value);
 		usb_transfer_schedule_ack(endpoint->in);
 	}
 	return USB_REQUEST_STATUS_OK;
@@ -455,7 +468,7 @@ usb_request_status_t usb_vendor_request_set_rx_overrun_limit(
 {
 	if (stage == USB_TRANSFER_STAGE_SETUP) {
 		uint32_t value = (endpoint->setup.index << 16) + endpoint->setup.value;
-		_rx_overrun_limit = value;
+		_rx_overrun_limit = transceiver_clamp_shortfall_limit(value);
 		usb_transfer_schedule_ack(endpoint->in);
 	}
 	return USB_REQUEST_STATUS_OK;
@@ -540,19 +553,85 @@ void transceiver_start_dma(void* src, void* dest, size_t size)
 	gpdma_channel_enable(DMA_CHANNEL);
 }
 
+static void edge_stream_reset(uint32_t activation_epoch)
+{
+	edge_transport_reset(&edge_transport, activation_epoch);
+	edge_dma_source_offset = 0;
+	edge_dma_destination_offset = 0;
+	edge_dma_remaining = 0;
+	edge_previous_total_shortfall =
+		m0_confirmed_shortfall_bytes(&m0_state);
+	edge_previous_shortfall_count = m0_state.num_shortfalls;
+	edge_quarantine_pending = false;
+}
+
+static uint32_t current_sample_rate_hz(void)
+{
+	const uint64_t rate =
+		radio_reg_read(&radio, RADIO_BANK_APPLIED, RADIO_SAMPLE_RATE);
+	if (rate == RADIO_UNSET) {
+		return 0;
+	}
+	return (uint32_t) ((rate + (SR_FP_ONE_HZ / 2u)) / SR_FP_ONE_HZ);
+}
+
+static void edge_start_next_dma_chunk(void)
+{
+	uint32_t chunk = USB_SAMP_BUFFER_SIZE - edge_dma_source_offset;
+	if (chunk > edge_dma_remaining) {
+		chunk = edge_dma_remaining;
+	}
+	transceiver_start_dma(
+		&usb_samp_buffer[edge_dma_source_offset],
+		&usb_bulk_buffer[edge_dma_destination_offset],
+		chunk);
+}
+
 // Called when a DMA transfer completes.
-void dma_isr(void)
+void dma_isr_impl(void)
 {
 	gpdma_channel_disable(DMA_CHANNEL);
 	GPDMA_INTTCCLEAR = (1 << DMA_CHANNEL);
-	m0_state.m4_count += dma_pending;
+
+	const uint32_t completed = dma_pending;
+	m0_state.m4_count += completed;
 	dma_pending = 0;
+
+	if (edge_transport.dma_slot != EDGE_TRANSPORT_SLOT_NONE) {
+		edge_dma_source_offset =
+			(edge_dma_source_offset + completed) & USB_SAMP_BUFFER_MASK;
+		edge_dma_destination_offset += completed;
+		edge_dma_remaining -= completed;
+		if (edge_dma_remaining != 0) {
+			edge_start_next_dma_chunk();
+		} else {
+			(void) edge_transport_finish_dma(&edge_transport, NULL);
+		}
+	}
 }
 
 void transceiver_bulk_transfer_complete(void* user_data, unsigned int bytes_transferred)
 {
 	(void) user_data;
 	usb_completed += bytes_transferred;
+}
+
+static void edge_bulk_transfer_complete(void* user_data, unsigned int bytes_transferred)
+{
+	uint32_t activation_epoch;
+	if (!edge_transport_complete_usb(
+		    &edge_transport,
+		    (uintptr_t) user_data,
+		    NULL,
+		    &activation_epoch)) {
+		return;
+	}
+	usb_completed += bytes_transferred;
+	if (bytes_transferred == EDGE_FRAME_BYTES) {
+		edge_frame_completed(activation_epoch);
+	} else {
+		edge_note_usb_short_transfer(activation_epoch);
+	}
 }
 
 typedef enum {
@@ -636,44 +715,289 @@ void start_usb_if_possible(direction_t direction)
 	usb_started += USB_TRANSFER_SIZE;
 }
 
-int8_t saturation_buffer = 0;
-uint64_t saturation_buffer_time = 0;
+static bool edge_observe_loss_and_transitions(void)
+{
+	if (!edge_rx_is_framed(edge_activation_epoch)) {
+		return true;
+	}
+	const uint64_t total_shortfall =
+		m0_confirmed_shortfall_bytes(&m0_state);
+	const uint32_t shortfall_count = m0_state.num_shortfalls;
+	const int64_t lost_bytes =
+		(int64_t) (total_shortfall - edge_previous_total_shortfall);
+	if (lost_bytes > 0) {
+		edge_note_hardware_loss_bytes(
+			edge_activation_epoch,
+			(uint64_t) lost_bytes);
+		edge_previous_total_shortfall = total_shortfall;
+	}
+	if (m0_state.error == M0_ERROR_MISSED_DEADLINE) {
+		edge_note_loss_uncertain(edge_activation_epoch);
+		edge_quarantine_pending = true;
+	}
+	if (shortfall_count != edge_previous_shortfall_count) {
+		edge_previous_shortfall_count = shortfall_count;
+		edge_quarantine_pending = true;
+	}
+	if (edge_take_quarantine_request(edge_activation_epoch)) {
+		edge_quarantine_pending = true;
+	}
+
+	/* A copied frame predates a newly observed transition and remains safe.
+	 * Once its DMA is complete, drop every uncommitted byte in the SGPIO ring.
+	 * The next frame therefore cannot concatenate samples across a loss,
+	 * retune, rate change, or gain transition. */
+	const bool no_reserve = edge_quarantine_pending;
+	if (no_reserve && dma_pending == 0) {
+		const uint32_t sampling_completed = m0_state.m0_count;
+		const uint32_t discarded = sampling_completed - dma_started;
+		dma_started = sampling_completed;
+		m0_state.m4_count = sampling_completed;
+		edge_note_dropped_bytes(edge_activation_epoch, discarded);
+		edge_quarantine_pending = false;
+	}
+	return no_reserve;
+}
+
+static void edge_reconcile_final_shortfall_total(uint32_t activation_epoch)
+{
+	/* OFF can change the request sequence immediately after the M0 detects a
+	 * missed deadline, before the main loop gets another observation pass. */
+	if (m0_state.error == M0_ERROR_MISSED_DEADLINE) {
+		edge_note_loss_uncertain(activation_epoch);
+	}
+	const uint64_t final_total =
+		m0_confirmed_shortfall_bytes(&m0_state);
+	const int64_t delta =
+		(int64_t) (final_total - edge_previous_total_shortfall);
+	if (delta > 0) {
+		edge_note_hardware_loss_bytes(activation_epoch, (uint64_t) delta);
+		edge_previous_total_shortfall = final_total;
+	}
+}
+
+static void edge_start_dma_if_possible(
+	uint32_t sampling_completed,
+	bool no_reserve)
+{
+	if (!edge_rx_is_framed(edge_activation_epoch) || dma_pending) {
+		return;
+	}
+
+	const uint8_t slot = edge_transport_dma_candidate(&edge_transport);
+	if (slot == EDGE_TRANSPORT_SLOT_NONE) {
+		return;
+	}
+
+	if (!edge_transport_snapshot_can_reserve(
+		    sampling_completed,
+		    dma_started,
+		    EDGE_FRAME_PAYLOAD_BYTES,
+		    no_reserve)) {
+		return;
+	}
+	const uint32_t data_available = sampling_completed - dma_started;
+
+	const uint32_t samp_buf_margin = USB_SAMP_BUFFER_SIZE - data_available;
+	const uint32_t m0_buf_half = sampling_completed & BUF_HALF_MASK;
+	const uint32_t dma_buf_half = dma_started & BUF_HALF_MASK;
+	if (m0_buf_half == dma_buf_half &&
+	    samp_buf_margin >= (USB_SAMP_BUFFER_SIZE / 2)) {
+		return;
+	}
+
+	const uint32_t slot_offset = slot * EDGE_FRAME_BYTES;
+	if (!edge_build_frame_header(
+		    &usb_bulk_buffer[slot_offset],
+		    current_sample_rate_hz(),
+		    edge_activation_epoch)) {
+		return;
+	}
+	if (!edge_transport_begin_dma(
+		    &edge_transport, slot, edge_activation_epoch)) {
+		return;
+	}
+	edge_dma_source_offset = dma_started & USB_SAMP_BUFFER_MASK;
+	edge_dma_destination_offset = slot_offset + EDGE_FRAME_HEADER_BYTES;
+	edge_dma_remaining = EDGE_FRAME_PAYLOAD_BYTES;
+	dma_started += EDGE_FRAME_PAYLOAD_BYTES;
+	edge_start_next_dma_chunk();
+}
+
+static void edge_start_usb_if_possible(uint32_t request_sequence)
+{
+	/* OFF and Edge RESET both run in the USB ISR. Keep that ISR masked from
+	 * the final ownership check through queue insertion: otherwise OFF could
+	 * flush the endpoint, then this old activation could enqueue one late
+	 * framed transfer before RESET. The queue's own global critical section
+	 * does not re-enable this individually masked IRQ. */
+	nvic_disable_irq(NVIC_USB0_IRQ);
+	if (transceiver_request.seq != request_sequence ||
+	    transceiver_request.mode != TRANSCEIVER_MODE_RX ||
+	    !edge_rx_is_framed(edge_activation_epoch)) {
+		nvic_enable_irq(NVIC_USB0_IRQ);
+		return;
+	}
+	const uint8_t slot = edge_transport_usb_candidate(&edge_transport);
+	if (slot == EDGE_TRANSPORT_SLOT_NONE) {
+		nvic_enable_irq(NVIC_USB0_IRQ);
+		return;
+	}
+	(void) edge_patch_frame_for_usb_short(
+		&usb_bulk_buffer[slot * EDGE_FRAME_BYTES]);
+	if (!edge_transport_begin_usb(&edge_transport, slot)) {
+		nvic_enable_irq(NVIC_USB0_IRQ);
+		return;
+	}
+
+	const uintptr_t completion_token =
+		edge_transport_completion_token(&edge_transport, slot);
+	const int scheduled = usb_transfer_schedule(
+		&usb_endpoint_bulk_in,
+		&usb_bulk_buffer[slot * EDGE_FRAME_BYTES],
+		EDGE_FRAME_BYTES,
+		edge_bulk_transfer_complete,
+		(void*) completion_token);
+	edge_transport_usb_schedule_result(
+		&edge_transport, slot, scheduled == 0);
+	if (scheduled == 0) {
+		usb_started += EDGE_FRAME_BYTES;
+	}
+	nvic_enable_irq(NVIC_USB0_IRQ);
+}
+
+static void edge_cancel_dma(void)
+{
+	/* Mask first. A terminal-count ISR that ran before this point owns and
+	 * completes the current chunk. Once masked, clearing both the peripheral
+	 * and NVIC pending state prevents a delayed ISR from restarting a wrapped
+	 * chunk after the slot has been released. */
+	nvic_disable_irq(NVIC_DMA_IRQ);
+	gpdma_channel_disable(DMA_CHANNEL);
+	GPDMA_INTTCCLEAR = (1 << DMA_CHANNEL);
+	dma_pending = 0;
+	edge_transport_cancel_dma(&edge_transport);
+	edge_dma_source_offset = 0;
+	edge_dma_destination_offset = 0;
+	edge_dma_remaining = 0;
+	nvic_clear_pending_irq(NVIC_DMA_IRQ);
+	nvic_enable_irq(NVIC_DMA_IRQ);
+}
+
+static int8_t saturation_buffer;
+static uint64_t saturation_buffer_time;
+static uint64_t runtime_counter_time;
 volatile uint64_t systick_counter = 0;
 
-void sys_tick_handler(void)
+static void update_rx_saturation_ui(void)
+{
+	const int8_t sample_value = *(
+		int8_t*) &usb_samp_buffer[m0_state.m0_count & USB_SAMP_BUFFER_MASK];
+
+	if (sample_value > saturation_buffer) {
+		saturation_buffer = sample_value;
+	}
+	if (-sample_value > saturation_buffer) {
+		saturation_buffer = -sample_value;
+	}
+	if (saturation_buffer_time + 4 < systick_counter) {
+		saturation_buffer_time = systick_counter;
+		hackrf_ui()->set_saturation(saturation_buffer);
+		saturation_buffer = 0;
+	}
+}
+
+void sys_tick_handler_impl(void)
 {
 	systick_counter++;
 }
 
 void rx_mode(uint32_t seq)
 {
+	if (transceiver_request.seq != seq ||
+	    transceiver_request.mode != TRANSCEIVER_MODE_RX) {
+		return;
+	}
 	transceiver_startup(TRANSCEIVER_MODE_RX);
+	bool framed = false;
+	if (!edge_rx_start(
+		    current_sample_rate_hz(),
+		    seq,
+		    &edge_activation_epoch,
+		    &framed)) {
+		transceiver_shutdown();
+		return;
+	}
+	runtime_counter_time = systick_counter;
+	if (framed) {
+		edge_stream_reset(edge_activation_epoch);
+	}
 
 	baseband_streaming_enable(&sgpio_config);
 
 	while (transceiver_request.seq == seq) {
-		start_dma_if_possible(DIRECTION_RX, DMA_TRANSFER_SIZE);
-		start_usb_if_possible(DIRECTION_RX);
-
-		int8_t sample_value = *(
-			int8_t*) &usb_samp_buffer[m0_state.m0_count & USB_SAMP_BUFFER_MASK];
-
-		if (sample_value > saturation_buffer)
-			saturation_buffer = sample_value;
-
-		if (-sample_value > saturation_buffer)
-			saturation_buffer = -sample_value;
-
-		if (saturation_buffer_time + 4 < systick_counter) {
-			saturation_buffer_time = systick_counter;
-			hackrf_ui()->set_saturation(saturation_buffer);
-			saturation_buffer = 0;
+		if (framed) {
+			/* M0 recovery publishes its shortfall state before advancing m0_count.
+			 * Snapshot first: a gap racing after observation cannot contribute its
+			 * post-gap bytes to this reservation, while a snapshot that already
+			 * includes them is paired with the published quarantine observation. */
+			const uint32_t sampling_completed = m0_state.m0_count;
+			const bool no_reserve = edge_observe_loss_and_transitions();
+			edge_start_dma_if_possible(sampling_completed, no_reserve);
+			edge_start_usb_if_possible(seq);
+		} else {
+			start_dma_if_possible(DIRECTION_RX, DMA_TRANSFER_SIZE);
+			start_usb_if_possible(DIRECTION_RX);
 		}
 
+		if (runtime_counter_time != systick_counter) {
+			runtime_counter_time = systick_counter;
+			edge_update_runtime_counters(
+				edge_activation_epoch,
+				m0_state.m0_count,
+				m0_state.m4_count,
+				usb_completed,
+				m0_state.num_shortfalls,
+				m0_state.longest_shortfall);
+			if (!framed) {
+				edge_update_legacy_timeline(
+					edge_activation_epoch,
+					m0_confirmed_shortfall_bytes(&m0_state));
+			}
+		}
+		update_rx_saturation_ui();
 		radio_update(&radio);
 	}
 
+	if (framed) {
+		edge_cancel_dma();
+	}
+	/* Mark Edge inactive before the OFF radio configuration is applied, so
+	 * shutdown-only gain/rate changes cannot become stream transitions. */
+	edge_rx_stop(edge_activation_epoch);
 	transceiver_shutdown();
+	if (framed) {
+		/* request_transceiver_mode() flushes the endpoint before changing the
+		 * sequence, and transceiver_shutdown() repeats that flush after the DMA
+		 * channel has been cancelled. This is the safe software-ownership reset
+		 * boundary for ordinary OFF and usb_configuration_changed() (including a
+		 * bus reset): no old USB callback or DMA ISR may retain a frame slot. The
+		 * per-submission completion serial deliberately survives this reset. */
+		edge_transport_reset(&edge_transport, edge_activation_epoch);
+		edge_reconcile_final_shortfall_total(edge_activation_epoch);
+	}
+	edge_update_runtime_counters(
+		edge_activation_epoch,
+		m0_state.m0_count,
+		m0_state.m4_count,
+		usb_completed,
+		m0_state.num_shortfalls,
+		m0_state.longest_shortfall);
+	if (!framed) {
+		edge_update_legacy_timeline(
+			edge_activation_epoch,
+			m0_confirmed_shortfall_bytes(&m0_state));
+	}
 }
 
 void tx_mode(uint32_t seq)

@@ -2,6 +2,7 @@
  * Copyright 2012-2022 Great Scott Gadgets <info@greatscottgadgets.com>
  * Copyright 2012 Jared Boone <jared@sharebrained.com>
  * Copyright 2013 Benjamin Vernoux <titanmkd@gmail.com>
+ * Modified for HackRF Edge in 2026 by HackRF Edge contributors.
  *
  * This file is part of HackRF.
  *
@@ -36,6 +37,7 @@ typedef struct {
 	uint32_t psr; /* Program Status Register. */
 } hard_fault_stack_t;
 
+#ifndef HACKRF_EXTERNAL_INTERRUPT_HANDLERS
 __attribute__((naked)) void hard_fault_handler(void)
 {
 	__asm__("TST LR, #4");
@@ -44,6 +46,22 @@ __attribute__((naked)) void hard_fault_handler(void)
 	__asm__("MRSNE R0, PSP");
 	__asm__("B hard_fault_handler_c");
 }
+
+void mem_manage_handler(void)
+{
+	while (1) {}
+}
+
+void bus_fault_handler(void)
+{
+	while (1) {}
+}
+
+void usage_fault_handler(void)
+{
+	while (1) {}
+}
+#endif
 
 volatile hard_fault_stack_t* hard_fault_stack_pt;
 
@@ -70,20 +88,5 @@ __attribute__((used)) void hard_fault_handler_c(uint32_t* args)
 		}
 	}
 	*/
-	while (1) {}
-}
-
-void mem_manage_handler(void)
-{
-	while (1) {}
-}
-
-void bus_fault_handler(void)
-{
-	while (1) {}
-}
-
-void usage_fault_handler(void)
-{
 	while (1) {}
 }

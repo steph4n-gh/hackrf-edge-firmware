@@ -1,4 +1,5 @@
-/* SPDX-License-Identifier: BSD-3-Clause */
+/* SPDX-FileCopyrightText: Copyright 2026 HackRF Edge contributors
+ * SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Host-side HackRF Edge v1 control protocol support.
  *
@@ -223,8 +224,9 @@ static int edge_validate_config_basic(const hackrf_edge_config* config)
 		return 0;
 	}
 	if (config->profile == HACKRF_EDGE_PROFILE_LEGACY_C8 &&
-	    (config->target_payload_bytes != 0u ||
-	     (config->flags & HACKRF_EDGE_CONFIG_EMIT_EVENTS) != 0u)) {
+	    (config->flags != 0u || config->input_sample_rate_hz != 0u ||
+	     config->target_payload_bytes != 0u ||
+	     config->apply_at_input_tick != 0u)) {
 		return 0;
 	}
 	if (config->target_payload_bytes != 0u &&
@@ -470,6 +472,7 @@ int ADDCALL hackrf_edge_set_config(hackrf_device* device, const hackrf_edge_conf
 
 int ADDCALL hackrf_edge_reset(hackrf_device* device)
 {
+	hackrf_edge_status status;
 	int result;
 
 	if (device == NULL) {
@@ -485,6 +488,16 @@ int ADDCALL hackrf_edge_reset(hackrf_device* device)
 		0,
 		HACKRF_EDGE_CONTROL_TIMEOUT_MS);
 	if (result != 0) {
+		/* Firmware deliberately stalls RESET while the legacy transceiver
+		 * still owns RX or TX. Recover the versioned reason from status so
+		 * callers receive BUSY instead of an opaque libusb failure. Only a PIPE
+		 * result proves that RESET stalled; probing status after a timeout or I/O
+		 * failure could misclassify a stale BUSY latch as the cause. */
+		if (result == HACKRF_EDGE_USB_ERROR_PIPE &&
+		    hackrf_edge_get_status(device, &status) == HACKRF_SUCCESS &&
+		    status.last_error == HACKRF_EDGE_ERROR_BUSY) {
+			return HACKRF_ERROR_BUSY;
+		}
 		return HACKRF_ERROR_LIBUSB;
 	}
 	return HACKRF_SUCCESS;

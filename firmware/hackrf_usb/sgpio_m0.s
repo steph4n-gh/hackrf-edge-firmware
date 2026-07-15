@@ -1,5 +1,6 @@
 /*
  * Copyright 2019-2022 Great Scott Gadgets <info@greatscottgadgets.com>
+ * Modified for HackRF Edge in 2026 by HackRF Edge contributors.
  *
  * This file is part of HackRF.
  *
@@ -98,12 +99,19 @@ These latencies are assumed to apply to all accesses to the SGPIO peripheral's
 address space, which includes its interrupt control registers as well as the
 shadow registers.
 
-There are four key code paths, with the following worst-case timings:
+The exact worst paths under the instruction timing model are:
 
-RX, normal:     150 cycles
-RX, overrun:    74 cycles
-TX, normal:     138 cycles
-TX, underrun:   143 cycles
+RX, normal (including RX -> WAIT):         158 cycles
+RX, continuing overrun below limit:         91 cycles
+TX, normal:                                143 cycles
+TX, continuing underrun below limit:       160 cycles
+RX/TX, first-event terminal timeout:   100/169 cycles
+
+The continuing paths fit the legacy 20 MS/s budget of 163.2 cycles per
+32-byte quantum; Edge framed mode is capped at 16 MS/s (204 cycles). The
+169-cycle timeout path is terminal: it records the error and enters idle
+instead of attempting another SGPIO quantum. See handle_shortfall for the
+new/open, recurring, low-word carry, total-word carry, and timeout subpaths.
 
 Design
 ======
@@ -218,9 +226,13 @@ The rest of this file is organised as follows:
 .equ THRESHOLD,                            0x1C
 .equ NEXT_MODE,                            0x20
 .equ ERROR,                                0x24
+.equ TOTAL_SHORTFALL,                      0x28
+.equ CURRENT_SHORTFALL,                    0x2C
+.equ TOTAL_SHORTFALL_HIGH,                 0x30
+.equ CURRENT_SHORTFALL_HIGH,               0x34
 
 // Private variables stored after state.
-.equ PREV_LONGEST_SHORTFALL,               0x28
+.equ PREV_LONGEST_SHORTFALL,               0x38
 
 // Operating modes.
 .equ MODE_IDLE,                            0
@@ -285,10 +297,11 @@ buf_ptr           .req r4
 	// the SGPIO to AHB bridge.
 
 	// Test the exchange interrupt status, shifting the slice A flag to the carry flag.
-	// If the flag is already set, we missed our deadline.
+	// If the flag is already set, a nearby veneer distinguishes an M4 wakeup request
+	// from a genuine missed deadline without adding cycles to the normal hot path.
 	ldr int_status, [sgpio_int, #INT_STATUS]        // int_status = SGPIO_STATUS_1          // 10
 	lsr scratch, int_status, #1                     // scratch = int_status >> 1            // 1
-	bcs missed_deadline                             // if carry: goto missed_deadline       // 1
+	bcs \name\()_initial_flag                      // if carry: inspect pending request    // 1
 
 \name\()_int_wait:
 	// Test the flag again, and if it's still unset, repeat until it's set.
@@ -318,6 +331,11 @@ buf_ptr           .req r4
 
 .macro update_counts
 	// Update counts after successful SGPIO operation.
+	// Commit a recovered shortfall before publishing the first post-gap byte.
+	// In steady state this simply writes zero again.
+	mov r0, hi_zero                                 // r0 = zero                            // 1
+	str r0, [state, #CURRENT_SHORTFALL]              // state.current_shortfall = zero       // 2
+	str r0, [state, #CURRENT_SHORTFALL_HIGH]         // state.current_shortfall_high = zero  // 2
 
 	// Update the byte count and store the new value.
 	add count, #32                                  // count += 32                          // 1
@@ -365,9 +383,13 @@ buf_ptr           .req r4
 	// Get current shortfall length from high register.
 	mov length, shortfall_length                    // length = shortfall_length            // 1
 
-	// Is this a new shortfall?
-	cmp length, #0                                  // if length > 0:                       // 1
-	bgt \name\()_extend_shortfall                   //      goto extend_shortfall           // 1 thru, 3 taken
+	// Is this a new shortfall? The low word is also zero every 4 GiB, so
+	// consult the published high word before treating zero as a new event.
+	cmp length, #0                                  // if length != 0:                      // 1
+	bne \name\()_extend_shortfall                   //      goto extend_shortfall           // 1 thru, 3 taken
+	ldr num, [state, #CURRENT_SHORTFALL_HIGH]       // num = current_shortfall_high         // 2
+	cmp num, #0                                     // if num != 0:                         // 1
+	bne \name\()_extend_shortfall                   //      goto extend_shortfall           // 1 thru, 3 taken
 
 	// If so, increase the shortfall count.
 	ldr num, [state, #NUM_SHORTFALLS]               // num = state.num_shortfalls           // 2
@@ -380,14 +402,37 @@ buf_ptr           .req r4
 
 \name\()_extend_shortfall:
 
-	// Extend the length of the current shortfall, and store back in high register.
-	add length, #32                                 // length += 32                         // 1
+	// Extend the low word of the current shortfall. On wrap, publish the
+	// current high word before the low word. A torn reader then sees current
+	// too far ahead, so confirmed (total - current) can only move backward.
+	add length, #32                                 // length += 32, setting carry          // 1
+	bcc \name\()_current_no_wrap                    // if no carry: skip high increment     // 1 thru, 3 taken
+	ldr num, [state, #CURRENT_SHORTFALL_HIGH]       // num = current_shortfall_high         // 2
+	add num, #1                                     // num += 1                             // 1
+	str num, [state, #CURRENT_SHORTFALL_HIGH]       // current_shortfall_high = num         // 2
+\name\()_current_no_wrap:
 	mov shortfall_length, length                    // shortfall_length = length            // 1
+	// Publish current before total. A concurrent total-then-current M4 read
+	// can be transiently old, but it cannot invent forward loss.
+	// LPC43xx observes these M0 AHB SRAM stores in program order. We rely on
+	// that platform guarantee instead of spending a DMB in this hot path;
+	// the M4 additionally stable-reads both counters and rejects backward candidates.
+	str length, [state, #CURRENT_SHORTFALL]          // state.current_shortfall = length     // 2
+	ldr num, [state, #TOTAL_SHORTFALL]              // num = state.total_shortfall          // 2
+	add num, #32                                    // num += 32, setting carry             // 1
+	// Publish total low before total high. At a low-word wrap the torn value
+	// is behind, never ahead of the exact cumulative total.
+	str num, [state, #TOTAL_SHORTFALL]              // state.total_shortfall = num          // 2
+	bcc \name\()_total_no_wrap                      // if no carry: skip high increment     // 1 thru, 3 taken
+	ldr num, [state, #TOTAL_SHORTFALL_HIGH]         // num = total_shortfall_high           // 2
+	add num, #1                                     // num += 1                             // 1
+	str num, [state, #TOTAL_SHORTFALL_HIGH]         // total_shortfall_high = num           // 2
+\name\()_total_no_wrap:
 
 	// Is this now the longest shortfall?
 	ldr longest, [state, #LONGEST_SHORTFALL]        // longest = state.longest_shortfall    // 2
 	cmp length, longest                             // if length <= longest:                // 1
-	blt \name\()_loop                               //      goto loop                       // 1 thru, 3 taken
+	blo \name\()_loop                               //      goto loop                       // 1 thru, 3 taken
 	str length, [state, #LONGEST_SHORTFALL]         // state.longest_shortfall = length     // 2
 
 	// Is this shortfall long enough to trigger a timeout?
@@ -395,7 +440,7 @@ buf_ptr           .req r4
 	cmp limit, #0                                   // if limit == 0:                       // 1
 	beq \name\()_loop                               //      goto loop                       // 1 thru, 3 taken
 	cmp length, limit                               // if length < limit:                   // 1
-	blt \name\()_loop                               //      goto loop                       // 1 thru, 3 taken
+	blo \name\()_loop                               //      goto loop                       // 1 thru, 3 taken
 
 	// If so, reset mode to idle and return to idle loop, logging an error.
 	//
@@ -411,6 +456,10 @@ buf_ptr           .req r4
 	ldr mode, [state, #ACTIVE_MODE]                 // mode = state.active_mode             // 2
 	lsr error, mode, #1                             // error = mode >> 1                    // 1
 	str error, [state, #ERROR]                      // state.error = error                  // 2
+	mov error, hi_zero                              // error = zero                         // 1
+	str error, [state, #CURRENT_SHORTFALL]           // commit timed-out shortfall           // 2
+	// A nonzero 32-bit limit necessarily fires before the first low-word
+	// wrap, so current_shortfall_high is already zero on every timeout path.
 	mov mode, #MODE_IDLE                            // mode = MODE_IDLE                     // 1
 	str mode, [state, #ACTIVE_MODE]                 // state.active_mode = mode             // 2
 	b idle                                          // goto idle                            // 3
@@ -497,6 +546,11 @@ main:                                                                           
 	str zero, [state, #THRESHOLD]                   // state.threshold = zero               // 2
 	str zero, [state, #NEXT_MODE]                   // state.next_mode = zero               // 2
 	str zero, [state, #ERROR]                       // state.error = zero                   // 2
+	str zero, [state, #TOTAL_SHORTFALL]             // state.total_shortfall = zero         // 2
+	str zero, [state, #CURRENT_SHORTFALL]           // state.current_shortfall = zero       // 2
+	str zero, [state, #TOTAL_SHORTFALL_HIGH]        // total_shortfall_high = zero          // 2
+	str zero, [state, #CURRENT_SHORTFALL_HIGH]      // current_shortfall_high = zero        // 2
+	str zero, [state, #PREV_LONGEST_SHORTFALL]      // prev_longest_shortfall = zero        // 2
 
 idle:
 	// Wait for a mode to be requested, then set up the new mode and acknowledge the request.
@@ -530,6 +584,10 @@ idle:
 	str zero, [state, #LONGEST_SHORTFALL]           // state.longest_shortfall = zero       // 2
 	str zero, [state, #THRESHOLD]                   // state.threshold = zero               // 2
 	str zero, [state, #PREV_LONGEST_SHORTFALL]      // prev_longest_shortfall = zero        // 2
+	str zero, [state, #TOTAL_SHORTFALL]             // state.total_shortfall = zero         // 2
+	str zero, [state, #CURRENT_SHORTFALL]           // state.current_shortfall = zero       // 2
+	str zero, [state, #TOTAL_SHORTFALL_HIGH]        // total_shortfall_high = zero          // 2
+	str zero, [state, #CURRENT_SHORTFALL_HIGH]      // current_shortfall_high = zero        // 2
 	str zero, [state, #ERROR]                       // state.error = zero                   // 2
 	mov shortfall_length, zero                      // shortfall_length = zero              // 1
 	mov count, zero                                 // count = zero                         // 1
@@ -572,26 +630,51 @@ tx_zeros:
 	beq tx_loop                                     //      goto tx_loop                    // 1 thru, 3 taken
 
 	// Run common shortfall handling and jump back to TX loop start.
-	handle_shortfall tx                             // handle_shortfall()                   // 24
+	handle_shortfall tx                             // handle_shortfall(): path-dependent
+
+request_or_missed:
+	// m0_set_mode publishes REQUESTED_MODE before raising the SGPIO flag. An
+	// already-set flag is therefore a deadline failure only when no request is
+	// pending. RX/TX/WAIT all use the checked stop path; WAIT has no open
+	// shortfall and falls directly through that handler to idle.
+	on_request checked_rollback                       // if request: checked stop             // 4
+	b missed_deadline                                 // otherwise: real missed deadline      // 3
+
+tx_initial_flag:
+	// Keep await_sgpio's conditional branch in range of the shared handler.
+	b request_or_missed
 
 checked_rollback:
-	// Checked rollback handler. This code is run when the M0 is in a TX or RX mode, and is
-	// placed back into IDLE mode by the M4. If there is an ongoing shortfall at this point,
-	// it is assumed to be a shutdown artifact and rolled back.
+	// Checked stop handler. This code is run when the M0 is in a TX or RX mode, and is
+	// placed back into IDLE mode by the M4. The M4 disables the baseband stream before
+	// requesting IDLE, then raises the SGPIO flag only to wake the M0. Consequently, an
+	// open shortfall here is real pre-stop loss; no post-stop SGPIO quantum was processed.
 
 	// If there is no ongoing shortfall, there's nothing to do - jump back to idle loop.
 	length .req r0
 	mov length, shortfall_length                    // length = shortfall_length            // 1
 	cmp length, #0                                  // if length == 0:                      // 1
+	bne finish_open_shortfall                       // if length != 0: finish it            // 1 thru, 3 taken
+	prev .req r1
+	ldr prev, [state, #CURRENT_SHORTFALL_HIGH]      // prev = current_shortfall_high        // 2
+	cmp prev, #0                                    // if prev == 0:                        // 1
 	beq idle                                        //      goto idle                       // 3
 
-	// Otherwise, roll back the state to ignore the current shortfall, then jump to idle.
-	prev .req r1
+	// Preserve the legacy shutdown convention: an event that is open at stop does not
+	// affect num_shortfalls or longest_shortfall. Exact-loss accounting is independent
+	// of those summary fields and commits all bytes already observed by the M0.
+finish_open_shortfall:
 	ldr prev, [state, #PREV_LONGEST_SHORTFALL]      // prev = prev_longest_shortfall        // 2
 	str prev, [state, #LONGEST_SHORTFALL]           // state.longest_shortfall = prev       // 2
 	ldr prev, [state, #NUM_SHORTFALLS]              // prev = num_shortfalls                // 2
 	sub prev, #1                                    // prev -= 1                            // 1
 	str prev, [state, #NUM_SHORTFALLS]              // state.num_shortfalls = prev          // 2
+	// Clearing current commits the already-accumulated total at the M0's stop
+	// acknowledgement boundary. Do not subtract current from total: that would
+	// discard real ADC loss immediately before stop.
+	mov length, hi_zero                             // length = zero                        // 1
+	str length, [state, #CURRENT_SHORTFALL]         // state.current_shortfall = zero       // 2
+	str length, [state, #CURRENT_SHORTFALL_HIGH]    // current_shortfall_high = zero        // 2
 
 	b idle                                          // goto idle                            // 3
 
@@ -640,7 +723,7 @@ tx_loop:
 	str r3, [sgpio_data, #SLICE7]                   // SGPIO_REG_SS[SLICE7] = r3            // 8
 
 	// Update counts.
-	update_counts                                   // update_counts()                      // 4
+	update_counts                                   // update_counts()                      // 9
 
 	// Jump to next mode if threshold reached, or back to TX loop start.
 	jump_next_mode tx                               // jump_next_mode()                     // 13
@@ -652,13 +735,22 @@ wait_loop:
 
 	// Check if there is a mode change request.
 	// If so, return to idle.
-	on_request idle                                                                         // 4
+	on_request wait_request                                                                 // 4
 
 	// Update counts.
-	update_counts                                   // update_counts()                      // 4
+	update_counts                                   // update_counts()                      // 9
 
 	// Jump to next mode if threshold reached, or back to wait loop start.
 	jump_next_mode wait                             // jump_next_mode()                     // 15
+
+wait_request:
+	// Keep the conditional mode-change branch in range; this unconditional
+	// branch has the wider encoding needed to reach idle.
+	b idle                                          // goto idle                            // 3
+
+wait_initial_flag:
+	// Keep await_sgpio's conditional branch in range of the shared handler.
+	b request_or_missed
 
 missed_deadline:
 
@@ -668,8 +760,15 @@ missed_deadline:
 	mov error, #ERROR_MISSED_DEADLINE               // error = ERROR_MISSED_DEADLINE        // 1
 	mov mode, #MODE_IDLE                            // mode = MODE_IDLE                     // 1
 	str error, [state, #ERROR]                      // state.error = error                  // 2
+	mov error, hi_zero                              // error = zero                         // 1
+	str error, [state, #CURRENT_SHORTFALL]           // commit any open shortfall            // 2
+	str error, [state, #CURRENT_SHORTFALL_HIGH]      // clear current high word              // 2
 	str mode, [state, #ACTIVE_MODE]                 // state.active_mode = mode             // 2
 	b idle                                          // goto idle                            // 3
+
+rx_initial_flag:
+	// Keep await_sgpio's conditional branch in range of the shared handler.
+	b request_or_missed
 
 rx_loop:
 
@@ -715,7 +814,7 @@ rx_loop:
 	stm buf_ptr!, {r0-r3}                           // buf_ptr[0:16] = r0-r3; buf_ptr += 16 // 5
 
 	// Update counts.
-	update_counts                                   // update_counts()                      // 4
+	update_counts                                   // update_counts()                      // 9
 
 	// Jump to next mode if threshold reached, or back to RX loop start.
 	jump_next_mode rx                               // jump_next_mode()                     // 12
@@ -723,7 +822,7 @@ rx_loop:
 rx_shortfall:
 
 	// Run common shortfall handling and jump back to RX loop.
-	handle_shortfall rx                             // handle_shortfall()                   // 24
+	handle_shortfall rx                             // handle_shortfall(): path-dependent
 
 // The linker will put a literal pool here, so add a label for clearer objdump output:
 constants:
