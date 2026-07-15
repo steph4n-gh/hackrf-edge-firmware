@@ -602,6 +602,15 @@ enum hackrf_error {
 	 */
 	HACKRF_ERROR_USB_API_VERSION = -1005,
 	/**
+	 * Edge discovery stalled because the installed firmware does not implement
+	 * the Edge control request.
+	 */
+	HACKRF_ERROR_EDGE_UNSUPPORTED = -1006,
+	/**
+	 * An Edge control reply had the wrong length or failed wire validation.
+	 */
+	HACKRF_ERROR_EDGE_MALFORMED = -1007,
+	/**
 	 * Can not exit library as one or more HackRFs still in use
 	 */
 	HACKRF_ERROR_NOT_LAST_DEVICE = -2000,
@@ -951,6 +960,127 @@ enum clkin_ctrl_signal {
  * @ingroup device
  */
 typedef struct hackrf_device hackrf_device;
+
+/**
+ * @defgroup edge HackRF Edge receive control protocol
+ *
+ * Edge v1 is an opt-in receive protocol. These are decoded host structures;
+ * they are not packed wire structures and must not be sent over USB directly.
+ * @ingroup device
+ */
+
+#define HACKRF_EDGE_ABI_MAJOR 1u
+#define HACKRF_EDGE_ABI_MINOR 0u
+#define HACKRF_EDGE_VENDOR_REQUEST 0xe0u
+#define HACKRF_EDGE_BUILD_ID_BYTES 16u
+
+enum hackrf_edge_profile {
+	HACKRF_EDGE_PROFILE_LEGACY_C8 = 0,
+	HACKRF_EDGE_PROFILE_FRAMED_C8 = 1,
+	HACKRF_EDGE_PROFILE_FRAMED_C16_D4 = 2,
+	HACKRF_EDGE_PROFILE_FRAMED_C16_D8 = 3,
+	HACKRF_EDGE_PROFILE_COUNT = 4,
+};
+
+enum hackrf_edge_capability_flag {
+	HACKRF_EDGE_CAP_CONTROL = UINT32_C(1) << 0,
+	HACKRF_EDGE_CAP_STATUS = UINT32_C(1) << 1,
+	HACKRF_EDGE_CAP_FRAMED_RX = UINT32_C(1) << 2,
+	HACKRF_EDGE_CAP_EMBEDDED_EVENTS = UINT32_C(1) << 3,
+	HACKRF_EDGE_CAP_SCHEDULED_CONFIG = UINT32_C(1) << 4,
+	HACKRF_EDGE_CAP_C16 = UINT32_C(1) << 5,
+	HACKRF_EDGE_CAP_EXACT_LOSS_COUNT = UINT32_C(1) << 6,
+};
+
+enum hackrf_edge_config_flag {
+	HACKRF_EDGE_CONFIG_ONE_SHOT = UINT32_C(1) << 0,
+	HACKRF_EDGE_CONFIG_RESET_COUNTERS = UINT32_C(1) << 1,
+	HACKRF_EDGE_CONFIG_EMIT_EVENTS = UINT32_C(1) << 2,
+	HACKRF_EDGE_CONFIG_SCHEDULED = UINT32_C(1) << 3,
+	HACKRF_EDGE_CONFIG_STRICT_RATE = UINT32_C(1) << 4,
+};
+
+enum hackrf_edge_status_flag {
+	HACKRF_EDGE_STATUS_CONFIG_ARMED = UINT32_C(1) << 0,
+	HACKRF_EDGE_STATUS_STREAM_ACTIVE = UINT32_C(1) << 1,
+	HACKRF_EDGE_STATUS_TRANSITION_PENDING = UINT32_C(1) << 2,
+	HACKRF_EDGE_STATUS_DISCONTINUITY_LATCHED = UINT32_C(1) << 3,
+	HACKRF_EDGE_STATUS_EVENT_LOSS_LATCHED = UINT32_C(1) << 4,
+	HACKRF_EDGE_STATUS_RX_OVERRUN_LATCHED = UINT32_C(1) << 5,
+	HACKRF_EDGE_STATUS_SATURATION_LATCHED = UINT32_C(1) << 6,
+	HACKRF_EDGE_STATUS_LEGACY_FALLBACK = UINT32_C(1) << 7,
+};
+
+enum hackrf_edge_error {
+	HACKRF_EDGE_ERROR_NONE = 0,
+	HACKRF_EDGE_ERROR_BAD_COMMAND = 1,
+	HACKRF_EDGE_ERROR_BAD_LENGTH = 2,
+	HACKRF_EDGE_ERROR_BAD_VERSION = 3,
+	HACKRF_EDGE_ERROR_BAD_CRC = 4,
+	HACKRF_EDGE_ERROR_BAD_PROFILE = 5,
+	HACKRF_EDGE_ERROR_BAD_RATE = 6,
+	HACKRF_EDGE_ERROR_BAD_PAYLOAD = 7,
+	HACKRF_EDGE_ERROR_BUSY = 8,
+	HACKRF_EDGE_ERROR_UNSUPPORTED = 9,
+	HACKRF_EDGE_ERROR_INTERNAL = 10,
+};
+
+typedef struct hackrf_edge_capabilities {
+	uint8_t abi_major;
+	uint8_t abi_minor;
+	uint32_t capability_flags;
+	uint32_t profile_mask;
+	uint32_t max_frame_bytes;
+	uint32_t max_payload_bytes;
+	uint32_t min_input_sample_rate_hz;
+	uint32_t max_input_sample_rate_hz;
+	uint32_t input_rate_granularity_hz;
+	uint16_t frame_header_bytes;
+	uint16_t config_bytes;
+	uint16_t status_bytes;
+	uint16_t event_bytes;
+	uint8_t build_id[HACKRF_EDGE_BUILD_ID_BYTES];
+} hackrf_edge_capabilities;
+
+typedef struct hackrf_edge_config {
+	uint8_t profile;
+	uint32_t flags;
+	uint32_t input_sample_rate_hz;
+	uint32_t target_payload_bytes;
+	uint64_t apply_at_input_tick;
+} hackrf_edge_config;
+
+typedef struct hackrf_edge_status {
+	uint8_t active_profile;
+	uint32_t snapshot_sequence;
+	uint32_t flags;
+	uint32_t last_error;
+	uint8_t requested_profile;
+	uint8_t transceiver_mode;
+	uint8_t sample_bytes;
+	uint8_t rf_amp_enabled;
+	uint32_t stream_epoch;
+	uint32_t config_epoch;
+	uint32_t gain_epoch;
+	uint32_t next_frame_sequence;
+	uint32_t input_sample_rate_hz;
+	uint32_t output_sample_rate_hz;
+	uint16_t decimation;
+	uint16_t group_delay_input_q8_8;
+	uint8_t lna_gain_db;
+	uint8_t vga_gain_db;
+	uint8_t txvga_gain_db;
+	uint64_t input_tick;
+	uint64_t dropped_input_samples;
+	uint64_t emitted_output_samples;
+	uint64_t m0_count_bytes;
+	uint64_t m4_count_bytes;
+	uint64_t usb_completed_bytes;
+	uint32_t shortfall_count;
+	uint32_t longest_shortfall_bytes;
+	uint64_t last_transition_input_tick;
+	uint32_t event_loss_count;
+} hackrf_edge_status;
 
 /**
  * USB transfer information passed to RX or TX callback.
@@ -2384,6 +2514,48 @@ extern ADDAPI int ADDCALL hackrf_radio_write_register(
 	const uint8_t bank,
 	const uint8_t register_number,
 	const uint64_t value);
+
+/**
+ * Discover and validate HackRF Edge v1 capabilities.
+ *
+ * A control stall is returned as @ref HACKRF_ERROR_EDGE_UNSUPPORTED so stock
+ * firmware can be detected without treating it as a damaged device. A reply
+ * with an invalid length, magic, version, CRC, or field invariant returns
+ * @ref HACKRF_ERROR_EDGE_MALFORMED.
+ * @ingroup edge
+ */
+extern ADDAPI int ADDCALL hackrf_edge_get_capabilities(
+	hackrf_device* device,
+	hackrf_edge_capabilities* capabilities);
+
+/** Read and validate a decoded HackRF Edge v1 status snapshot. @ingroup edge */
+extern ADDAPI int ADDCALL hackrf_edge_get_status(
+	hackrf_device* device,
+	hackrf_edge_status* status);
+
+/** Read and validate the requested/armed HackRF Edge v1 configuration. @ingroup edge */
+extern ADDAPI int ADDCALL hackrf_edge_get_config(
+	hackrf_device* device,
+	hackrf_edge_config* config);
+
+/**
+ * Validate, encode, and submit a HackRF Edge v1 configuration.
+ *
+ * The library discovers capabilities first and rejects unsupported profiles,
+ * rates, payload sizes, event emission, and scheduling before issuing
+ * SET_CONFIG. Non-legacy profiles require HACKRF_EDGE_CONFIG_ONE_SHOT.
+ * @ingroup edge
+ */
+extern ADDAPI int ADDCALL hackrf_edge_set_config(
+	hackrf_device* device,
+	const hackrf_edge_config* config);
+
+/**
+ * Reset only Edge state to the canonical legacy receive profile.
+ * This does not reset the MCU or other HackRF configuration.
+ * @ingroup edge
+ */
+extern ADDAPI int ADDCALL hackrf_edge_reset(hackrf_device* device);
 
 #ifdef __cplusplus
 } // __cplusplus defined.

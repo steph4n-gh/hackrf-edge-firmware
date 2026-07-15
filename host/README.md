@@ -107,6 +107,22 @@ sudo make install
 sudo update_dyld_shared_cache # equivalent to ldconfig in linux
 ```
 
+## Experimental Edge v1 diagnostics
+
+`hackrf_edge` reads Edge capabilities, status, and the armed configuration by
+default. It does not change device state unless `--set-profile` or
+`--reset-edge` is supplied explicitly. Run `hackrf_edge --help` for the
+configuration flags.
+
+The host-only protocol tests use a mock USB control transport and do not need
+a HackRF:
+
+```sh
+cmake -S host -B host/build -DBUILD_TESTING=ON
+cmake --build host/build
+ctest --test-dir host/build --output-on-failure
+```
+
 ## Credits
 
 principal author: Michael Ossmann <mike@ossmann.com>

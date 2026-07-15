@@ -22,6 +22,7 @@ project(
   libhackrf
   LANGUAGES C
   VERSION 0.10.0)
+include(CTest)
 include(GNUInstallDirs)
 set(PACKAGE libhackrf)
 set(VERSION_STRING ${MAJOR_VERSION}.${MINOR_VERSION})
@@ -45,6 +46,9 @@ find_package(Threads REQUIRED)
 find_package(PThreads4W QUIET)
 
 add_subdirectory(src)
+if(BUILD_TESTING)
+  add_subdirectory(tests)
+endif()
 
 # ##############################################################################
 # Create Cmake Config-file package interface

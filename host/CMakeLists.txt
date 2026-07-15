@@ -2,6 +2,7 @@
 
 cmake_minimum_required(VERSION 3.10.0)
 project(HackRF C)
+include(CTest)
 set(CMAKE_VERBOSE_MAKEFILE ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 

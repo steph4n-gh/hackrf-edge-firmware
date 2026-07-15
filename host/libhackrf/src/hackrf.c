@@ -22,6 +22,7 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 */
 
 #include "hackrf.h"
+#include "hackrf_edge_internal.h"
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -206,6 +207,33 @@ static int create_transfer_thread(hackrf_device* device);
 
 static libusb_context* g_libusb_context = NULL;
 int last_libusb_error = LIBUSB_SUCCESS;
+
+int hackrf_edge_control_transfer(
+	hackrf_device* device,
+	uint8_t request_type,
+	uint8_t request,
+	uint16_t value,
+	uint16_t index,
+	unsigned char* data,
+	uint16_t length,
+	unsigned int timeout_ms)
+{
+	int result;
+
+	result = libusb_control_transfer(
+		device->usb_device,
+		request_type,
+		request,
+		value,
+		index,
+		data,
+		length,
+		timeout_ms);
+	if (result < 0) {
+		last_libusb_error = result;
+	}
+	return result;
+}
 
 /*
  * Check if the transfers are setup and owned by libusb.
@@ -2517,6 +2545,12 @@ const char* ADDCALL hackrf_error_name(enum hackrf_error errcode)
 
 	case HACKRF_ERROR_USB_API_VERSION:
 		return "feature not supported by installed firmware";
+
+	case HACKRF_ERROR_EDGE_UNSUPPORTED:
+		return "Edge protocol not supported by installed firmware";
+
+	case HACKRF_ERROR_EDGE_MALFORMED:
+		return "malformed Edge protocol reply";
 
 	case HACKRF_ERROR_NOT_LAST_DEVICE:
 		return "one or more HackRFs still in use";

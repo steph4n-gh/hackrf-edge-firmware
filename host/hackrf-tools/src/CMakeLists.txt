@@ -27,6 +27,7 @@ set(TOOLS
     hackrf_spiflash
     hackrf_cpldjtag
     hackrf_info
+    hackrf_edge
     hackrf_debug
     hackrf_clock
     hackrf_operacake
