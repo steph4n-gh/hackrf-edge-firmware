@@ -123,9 +123,16 @@ int main(void)
 	       hackrf_library_version());
 
 	list = hackrf_device_list();
+	if (list == NULL) {
+		fprintf(stderr, "hackrf_device_list() failed\n");
+		hackrf_exit();
+		return EXIT_FAILURE;
+	}
 
 	if (list->devicecount < 1) {
 		printf("No HackRF boards found.\n");
+		hackrf_device_list_free(list);
+		hackrf_exit();
 		return EXIT_FAILURE;
 	}
 
@@ -212,6 +219,12 @@ int main(void)
 			}
 			print_board_rev(board_rev);
 		}
+		/* Keep the legacy six-line device prefix stable for downstream parsers. */
+		printf("Hardware Serial Number: %08x%08x%08x%08x\n",
+		       read_partid_serialno.serial_no[0],
+		       read_partid_serialno.serial_no[1],
+		       read_partid_serialno.serial_no[2],
+		       read_partid_serialno.serial_no[3]);
 		if (usb_version >= 0x0106) {
 			result = hackrf_supported_platform_read(
 				device,

@@ -23,6 +23,8 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 
 #include "hackrf.h"
 #include "hackrf_edge_internal.h"
+#include "hackrf_serial_internal.h"
+#include <limits.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -141,9 +143,8 @@ typedef enum {
 	HACKRF_HW_SYNC_MODE_ON = 1,
 } hackrf_hw_sync_mode;
 
-#define TRANSFER_COUNT        4
-#define TRANSFER_BUFFER_SIZE  262144
-#define USB_MAX_SERIAL_LENGTH 32
+#define TRANSFER_COUNT       4
+#define TRANSFER_BUFFER_SIZE 262144
 
 struct hackrf_device {
 	libusb_device_handle* usb_device;
@@ -590,18 +591,36 @@ const char* ADDCALL hackrf_library_release()
 hackrf_device_list_t* ADDCALL hackrf_device_list()
 {
 	int i;
+	ssize_t usb_devicecount;
 	libusb_device_handle* usb_device = NULL;
 	uint8_t serial_descriptor_index;
-	char serial_number[64];
-	uint8_t idx, serial_number_length;
+	char serial_number[HACKRF_USB_MAX_SERIAL_LENGTH + 1];
+	int idx;
+	int serial_number_length;
 
 	hackrf_device_list_t* list = calloc(1, sizeof(*list));
 	if (list == NULL)
 		return NULL;
 
-	list->usb_devicecount = (int) libusb_get_device_list(
+	usb_devicecount = libusb_get_device_list(
 		g_libusb_context,
 		(libusb_device***) &list->usb_devices);
+	if (usb_devicecount < 0) {
+		last_libusb_error = (int) usb_devicecount;
+		hackrf_device_list_free(list);
+		return NULL;
+	}
+	if (usb_devicecount > INT_MAX) {
+		last_libusb_error = LIBUSB_ERROR_OVERFLOW;
+		hackrf_device_list_free(list);
+		return NULL;
+	}
+	list->usb_devicecount = (int) usb_devicecount;
+
+	/* calloc(0, ...) may return NULL without indicating an allocation error. */
+	if (list->usb_devicecount == 0) {
+		return list;
+	}
 
 	list->serial_numbers = calloc(list->usb_devicecount, sizeof(void*));
 	list->usb_board_ids =
@@ -616,7 +635,13 @@ hackrf_device_list_t* ADDCALL hackrf_device_list()
 
 	for (i = 0; i < list->usb_devicecount; i++) {
 		struct libusb_device_descriptor device_descriptor;
-		libusb_get_device_descriptor(list->usb_devices[i], &device_descriptor);
+		const int descriptor_result = libusb_get_device_descriptor(
+			list->usb_devices[i],
+			&device_descriptor);
+		if (descriptor_result != LIBUSB_SUCCESS) {
+			last_libusb_error = descriptor_result;
+			continue;
+		}
 
 		if (device_descriptor.idVendor == hackrf_usb_vid) {
 			if ((device_descriptor.idProduct == hackrf_one_usb_pid) ||
@@ -628,24 +653,26 @@ hackrf_device_list_t* ADDCALL hackrf_device_list()
 
 				serial_descriptor_index = device_descriptor.iSerialNumber;
 				if (serial_descriptor_index > 0) {
-					if (libusb_open(
-						    list->usb_devices[i],
-						    &usb_device) != 0) {
+					const int open_result = libusb_open(
+						list->usb_devices[i],
+						&usb_device);
+					if (open_result != LIBUSB_SUCCESS) {
+						last_libusb_error = open_result;
 						usb_device = NULL;
 						continue;
 					}
-					serial_number_length =
+					serial_number_length = hackrf_usb_serial_prepare(
+						serial_number,
+						sizeof(serial_number),
 						libusb_get_string_descriptor_ascii(
 							usb_device,
 							serial_descriptor_index,
 							(unsigned char*) serial_number,
-							sizeof(serial_number));
-					if (serial_number_length >= USB_MAX_SERIAL_LENGTH)
-						serial_number_length =
-							USB_MAX_SERIAL_LENGTH;
-
-					serial_number[serial_number_length] = 0;
-					list->serial_numbers[idx] = strdup(serial_number);
+							sizeof(serial_number)));
+					if (serial_number_length >= 0) {
+						list->serial_numbers[idx] =
+							strdup(serial_number);
+					}
 
 					libusb_close(usb_device);
 					usb_device = NULL;
@@ -661,11 +688,18 @@ void ADDCALL hackrf_device_list_free(hackrf_device_list_t* list)
 {
 	int i;
 
-	libusb_free_device_list((libusb_device**) list->usb_devices, 1);
+	if (list == NULL) {
+		return;
+	}
 
-	for (i = 0; i < list->devicecount; i++) {
-		if (list->serial_numbers[i])
+	if (list->usb_devices != NULL) {
+		libusb_free_device_list((libusb_device**) list->usb_devices, 1);
+	}
+
+	if (list->serial_numbers != NULL) {
+		for (i = 0; i < list->devicecount; i++) {
 			free(list->serial_numbers[i]);
+		}
 	}
 
 	free(list->serial_numbers);
@@ -674,14 +708,51 @@ void ADDCALL hackrf_device_list_free(hackrf_device_list_t* list)
 	free(list);
 }
 
+static int hackrf_usb_iap_serial_suffix_matches(
+	libusb_device_handle* usb_device,
+	const char* desired_serial_number,
+	size_t desired_serial_length)
+{
+	read_partid_serialno_t partid_serialno;
+	char serial_number[HACKRF_USB_MAX_SERIAL_LENGTH + 1];
+	int result;
+	unsigned int i;
+
+	result = libusb_control_transfer(
+		usb_device,
+		LIBUSB_ENDPOINT_IN | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE,
+		HACKRF_VENDOR_REQUEST_BOARD_PARTID_SERIALNO_READ,
+		0,
+		0,
+		(unsigned char*) &partid_serialno,
+		(uint16_t) sizeof(partid_serialno),
+		DEFAULT_REQUEST_TIMEOUT);
+	if (result != (int) sizeof(partid_serialno)) {
+		return 0;
+	}
+
+	for (i = 0; i < 4u; i++) {
+		partid_serialno.serial_no[i] = FROM_LE32(partid_serialno.serial_no[i]);
+	}
+	result = hackrf_usb_serial_format_iap(
+		serial_number,
+		sizeof(serial_number),
+		partid_serialno.serial_no);
+	return hackrf_usb_serial_suffix_matches(
+		serial_number,
+		result,
+		desired_serial_number,
+		desired_serial_length);
+}
+
 libusb_device_handle* hackrf_open_usb(const char* const desired_serial_number)
 {
 	libusb_device_handle* usb_device = NULL;
 	libusb_device** devices = NULL;
-	const ssize_t list_length = libusb_get_device_list(g_libusb_context, &devices);
-	ssize_t match_len = 0;
+	ssize_t list_length;
+	size_t match_len = 0;
 	ssize_t i;
-	char serial_number[64];
+	char serial_number[HACKRF_USB_MAX_SERIAL_LENGTH + 1];
 	int serial_number_length;
 
 	if (desired_serial_number) {
@@ -689,13 +760,30 @@ libusb_device_handle* hackrf_open_usb(const char* const desired_serial_number)
 		 * Should probably complain if the match is not unique, currently doesn't.
 		 */
 		match_len = strlen(desired_serial_number);
-		if (match_len > 32)
+		if (match_len > HACKRF_USB_MAX_SERIAL_LENGTH)
 			return NULL;
+	}
+
+	list_length = libusb_get_device_list(g_libusb_context, &devices);
+	if (list_length < 0) {
+		last_libusb_error = (int) list_length;
+		if (devices != NULL) {
+			libusb_free_device_list(devices, 1);
+		}
+		return NULL;
+	}
+	if (devices == NULL) {
+		return NULL;
 	}
 
 	for (i = 0; i < list_length; i++) {
 		struct libusb_device_descriptor device_descriptor;
-		libusb_get_device_descriptor(devices[i], &device_descriptor);
+		const int descriptor_result =
+			libusb_get_device_descriptor(devices[i], &device_descriptor);
+		if (descriptor_result != LIBUSB_SUCCESS) {
+			last_libusb_error = descriptor_result;
+			continue;
+		}
 
 		if (device_descriptor.idVendor == hackrf_usb_vid) {
 			if ((device_descriptor.idProduct == hackrf_one_usb_pid) ||
@@ -704,39 +792,48 @@ libusb_device_handle* hackrf_open_usb(const char* const desired_serial_number)
 				if (desired_serial_number != NULL) {
 					const uint_fast8_t serial_descriptor_index =
 						device_descriptor.iSerialNumber;
+					const int open_result =
+						libusb_open(devices[i], &usb_device);
+					if (open_result != LIBUSB_SUCCESS) {
+						last_libusb_error = open_result;
+						usb_device = NULL;
+						continue;
+					}
+					serial_number_length = -1;
 					if (serial_descriptor_index > 0) {
-						if (libusb_open(
-							    devices[i],
-							    &usb_device) != 0) {
-							usb_device = NULL;
-							continue;
-						}
-						serial_number_length =
+						serial_number_length = hackrf_usb_serial_prepare(
+							serial_number,
+							sizeof(serial_number),
 							libusb_get_string_descriptor_ascii(
 								usb_device,
 								serial_descriptor_index,
 								(unsigned char*)
 									serial_number,
-								sizeof(serial_number));
-						if (serial_number_length >=
-						    USB_MAX_SERIAL_LENGTH)
-							serial_number_length =
-								USB_MAX_SERIAL_LENGTH;
-						serial_number[serial_number_length] = 0;
-						if (strncmp(serial_number +
-								    serial_number_length -
-								    match_len,
+								sizeof(serial_number)));
+						if (hackrf_usb_serial_suffix_matches(
+							    serial_number,
+							    serial_number_length,
 							    desired_serial_number,
-							    match_len) == 0) {
+							    match_len)) {
 							break;
-						} else {
-							libusb_close(usb_device);
-							usb_device = NULL;
 						}
 					}
+					if (hackrf_usb_iap_serial_suffix_matches(
+						    usb_device,
+						    desired_serial_number,
+						    match_len)) {
+						break;
+					}
+					libusb_close(usb_device);
+					usb_device = NULL;
 				} else {
-					libusb_open(devices[i], &usb_device);
-					break;
+					const int open_result =
+						libusb_open(devices[i], &usb_device);
+					if (open_result == LIBUSB_SUCCESS) {
+						break;
+					}
+					last_libusb_error = open_result;
+					usb_device = NULL;
 				}
 			}
 		}

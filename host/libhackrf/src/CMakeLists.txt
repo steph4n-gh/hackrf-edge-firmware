@@ -85,7 +85,7 @@ endfunction()
 
 # Dynamic library
 if(ENABLE_SHARED_LIB)
-  add_library(hackrf SHARED hackrf.c hackrf_edge.c)
+  add_library(hackrf SHARED hackrf.c hackrf_edge.c hackrf_serial.c)
   set_target_properties(hackrf PROPERTIES
     VERSION ${PROJECT_VERSION}
     SOVERSION ${PROJECT_VERSION_MAJOR})
@@ -95,7 +95,7 @@ endif()
 
 # Static library
 if(ENABLE_STATIC_LIB)
-  add_library(hackrf_static STATIC hackrf.c hackrf_edge.c)
+  add_library(hackrf_static STATIC hackrf.c hackrf_edge.c hackrf_serial.c)
   if(MSVC)
     set_target_properties(hackrf_static PROPERTIES OUTPUT_NAME "hackrf_static")
   else()

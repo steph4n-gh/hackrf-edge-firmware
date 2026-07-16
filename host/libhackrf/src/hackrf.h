@@ -138,7 +138,11 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
  * 
  * ## Open by serial
  * 
- * @ref hackrf_open_by_serial opens a device by a given serial (suffix). If no serial is specified it defaults to @ref hackrf_open
+ * @ref hackrf_open_by_serial opens a device by a given serial suffix. It first
+ * checks the USB string descriptor and then the MCU IAP hardware serial. The
+ * hardware-serial fallback keeps the selector stable for firmware executed
+ * from RAM, whose USB descriptor is `RunningFromRAM`. If no serial is
+ * specified it defaults to @ref hackrf_open.
  * 
  * ## Open by listing
  * 
@@ -1322,7 +1326,8 @@ extern ADDAPI const char* ADDCALL hackrf_library_release();
 
 /**
  * List connected HackRF devices
- * @return list of connected devices. The list should be freed with @ref hackrf_device_list_free
+ * @return list of connected devices, or NULL if enumeration or allocation
+ * fails. The list should be freed with @ref hackrf_device_list_free.
  * @ingroup device
  */
 extern ADDAPI hackrf_device_list_t* ADDCALL hackrf_device_list();
@@ -1354,7 +1359,7 @@ extern ADDAPI int ADDCALL hackrf_device_list_bus_sharing(
 
 /**
  * Free a previously allocated @ref hackrf_device_list list.
- * @param[in] list list to free
+ * @param[in] list list to free; NULL is accepted
  * @ingroup device
  */
 extern ADDAPI void ADDCALL hackrf_device_list_free(hackrf_device_list_t* list);
@@ -1369,7 +1374,8 @@ extern ADDAPI int ADDCALL hackrf_open(hackrf_device** device);
 
 /**
  * Open HackRF device by serial number
- * @param[in] desired_serial_number serial number of device to open. If NULL then default to first device found.
+ * @param[in] desired_serial_number USB-descriptor or MCU IAP hardware serial
+ * suffix of the device to open. If NULL then default to first device found.
  * @param[out] device device handle
  * @return @ref HACKRF_SUCCESS on success, @ref HACKRF_ERROR_INVALID_PARAM if @p device is NULL, @ref HACKRF_ERROR_NOT_FOUND if no HackRF devices are found or other @ref hackrf_error variant
  * @ingroup device
