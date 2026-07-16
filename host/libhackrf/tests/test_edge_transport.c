@@ -45,6 +45,25 @@ static uintptr_t make_usb_ready(
 	return edge_transport_completion_token(transport, slot);
 }
 
+static void test_static_initializer_is_legacy_safe(void)
+{
+	edge_transport_state_t transport = EDGE_TRANSPORT_STATE_INITIALIZER;
+	uint32_t legacy_bytes = 0;
+
+	assert(edge_transport_invariant(&transport));
+	assert(!edge_transport_dma_owned(&transport));
+	assert(!edge_transport_dma_chunk_valid(&transport, 8192, 0));
+
+	/* Model legacy-first RX and TX for several sample/USB ring wraps.  Their
+	 * shared DMA completions must never acquire framed continuation ownership. */
+	for (unsigned int transfer = 0; transfer < 32; ++transfer) {
+		legacy_bytes += 8192;
+		assert(!edge_transport_dma_owned(&transport));
+		assert(!edge_transport_dma_chunk_valid(&transport, 8192, 0));
+	}
+	assert(legacy_bytes == 262144);
+}
+
 static void test_pipeline_and_queue_ownership(void)
 {
 	edge_transport_state_t transport = {0};
@@ -177,6 +196,37 @@ static void test_reset_invalidates_usb_ownership_and_preserves_nonce(void)
 	assert(edge_transport_invariant(&transport));
 }
 
+static void test_dma_abandon_preserves_other_usb_slot(void)
+{
+	edge_transport_state_t transport = EDGE_TRANSPORT_STATE_INITIALIZER;
+	uint8_t completed_slot = EDGE_TRANSPORT_SLOT_NONE;
+	uint32_t completed_epoch = 0;
+
+	edge_transport_reset(&transport, 26);
+	const uintptr_t usb_token = make_usb_ready(&transport, 26);
+	edge_transport_usb_schedule_result(&transport, 0, true);
+	assert(transport.slots[0].state == EDGE_TRANSPORT_SLOT_USB);
+
+	assert(edge_transport_dma_candidate(&transport) == 1);
+	assert(edge_transport_begin_dma(&transport, 1, 26));
+	assert(edge_transport_dma_owned(&transport));
+	edge_transport_cancel_dma(&transport);
+
+	assert(transport.slots[0].state == EDGE_TRANSPORT_SLOT_USB);
+	assert(transport.slots[1].state == EDGE_TRANSPORT_SLOT_FREE);
+	assert(!edge_transport_dma_owned(&transport));
+	assert(edge_transport_dma_candidate(&transport) == 1);
+	assert(edge_transport_complete_usb(
+		&transport, usb_token, &completed_slot, &completed_epoch));
+	assert(completed_slot == 0);
+	assert(completed_epoch == 26);
+	assert(edge_transport_dma_candidate(&transport) == 1);
+	assert(edge_transport_begin_dma(&transport, 1, 26));
+	assert(finish_dma(&transport) == 1);
+	assert(edge_transport_usb_candidate(&transport) == 1);
+	assert(edge_transport_invariant(&transport));
+}
+
 static void test_completion_serial_wrap_skips_null_token(void)
 {
 	edge_transport_state_t transport = {0};
@@ -260,10 +310,11 @@ static void modeled_dma_service_irq(modeled_dma_t* model)
 	model->nvic_pending = false;
 	const uint32_t completed = model->dma_pending;
 	model->dma_pending = 0;
-	if (model->transport.dma_slot == EDGE_TRANSPORT_SLOT_NONE) {
+	if (!edge_transport_dma_owned(&model->transport)) {
 		return;
 	}
-	assert(completed <= model->dma_remaining);
+	assert(edge_transport_dma_chunk_valid(
+		&model->transport, completed, model->dma_remaining));
 	model->dma_remaining -= completed;
 	if (model->dma_remaining != 0) {
 		model->dma_pending = model->dma_remaining;
@@ -374,11 +425,13 @@ static void test_invalid_operations_preserve_invariants(void)
 
 int main(void)
 {
+	test_static_initializer_is_legacy_safe();
 	test_pipeline_and_queue_ownership();
 	test_schedule_failure_is_retryable();
 	test_stale_completion_cannot_release_reused_slot();
 	test_stale_completion_cannot_release_same_epoch_slot_reuse();
 	test_reset_invalidates_usb_ownership_and_preserves_nonce();
+	test_dma_abandon_preserves_other_usb_slot();
 	test_completion_serial_wrap_skips_null_token();
 	test_pre_observe_snapshot_closes_gap_threshold_race();
 	test_stop_cancel_interrupt_ordering();

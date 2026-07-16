@@ -44,6 +44,12 @@ typedef struct {
 	uint32_t next_completion_serial;
 } edge_transport_state_t;
 
+/* A zero-filled transport has dma_slot == 0, which is a real slot.  Use this
+ * initializer for static storage so legacy DMA cannot be mistaken for a
+ * framed transfer before the first edge_transport_reset(). */
+#define EDGE_TRANSPORT_STATE_INITIALIZER \
+	{ .dma_slot = EDGE_TRANSPORT_SLOT_NONE }
+
 static inline void edge_transport_reset(
 	edge_transport_state_t* transport,
 	uint32_t activation_epoch)
@@ -56,6 +62,23 @@ static inline void edge_transport_reset(
 	transport->dma_slot = EDGE_TRANSPORT_SLOT_NONE;
 	transport->next_dma_slot = 0;
 	transport->next_usb_slot = 0;
+}
+
+static inline bool edge_transport_dma_owned(
+	const edge_transport_state_t* transport)
+{
+	const uint8_t slot = transport->dma_slot;
+	return slot < EDGE_TRANSPORT_SLOT_COUNT &&
+		transport->slots[slot].state == EDGE_TRANSPORT_SLOT_DMA;
+}
+
+static inline bool edge_transport_dma_chunk_valid(
+	const edge_transport_state_t* transport,
+	uint32_t completed,
+	uint32_t remaining)
+{
+	return edge_transport_dma_owned(transport) && completed != 0 &&
+		completed <= remaining;
 }
 
 static inline bool edge_transport_snapshot_can_reserve(
@@ -120,6 +143,9 @@ static inline void edge_transport_cancel_dma(edge_transport_state_t* transport)
 	if (slot < EDGE_TRANSPORT_SLOT_COUNT &&
 	    transport->slots[slot].state == EDGE_TRANSPORT_SLOT_DMA) {
 		transport->slots[slot].state = EDGE_TRANSPORT_SLOT_FREE;
+		/* Refill the abandoned slot first.  The USB cursor is waiting for
+		 * this slot, so advancing from the other slot would reorder frames. */
+		transport->next_dma_slot = slot;
 	}
 	transport->dma_slot = EDGE_TRANSPORT_SLOT_NONE;
 }

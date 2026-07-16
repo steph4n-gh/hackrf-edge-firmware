@@ -108,4 +108,16 @@ if(NOT MSVC)
       ${CMAKE_CURRENT_SOURCE_DIR}/../../../firmware/common/usb.c
       ${CMAKE_CURRENT_SOURCE_DIR}/../../../firmware/hackrf_usb/hackrf_usb.c
       ${CMAKE_CURRENT_SOURCE_DIR}/../../../firmware/hackrf_usb/usb_api_transceiver.c)
+
+  add_test(
+    NAME hackrf_edge_legacy_dma_ownership
+    COMMAND
+      python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_legacy_dma_ownership.py
+      ${CMAKE_CURRENT_SOURCE_DIR}/../../../firmware/hackrf_usb/usb_api_transceiver.c)
+
+  add_test(
+    NAME hackrf_edge_cli_output_contract
+    COMMAND
+      python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_edge_cli_output_contract.py
+      ${CMAKE_CURRENT_SOURCE_DIR}/../../hackrf-tools/src/hackrf_edge.c)
 endif()

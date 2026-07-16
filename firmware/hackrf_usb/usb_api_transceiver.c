@@ -56,6 +56,7 @@
 
 #define USB_TRANSFER_SIZE 0x4000
 #define DMA_TRANSFER_SIZE 0x2000
+#define DMA_MAX_TRANSFER_SIZE 0x3ffc
 
 #define BUF_HALF_MASK (USB_SAMP_BUFFER_SIZE >> 1)
 
@@ -66,7 +67,8 @@ bool auto_tx_flush = true;
 
 volatile uint32_t dma_started, dma_pending, usb_started, usb_completed;
 
-static edge_transport_state_t edge_transport;
+static edge_transport_state_t edge_transport =
+	EDGE_TRANSPORT_STATE_INITIALIZER;
 static uint32_t edge_dma_source_offset;
 static uint32_t edge_dma_destination_offset;
 static uint32_t edge_dma_remaining;
@@ -74,6 +76,25 @@ static uint64_t edge_previous_total_shortfall;
 static uint32_t edge_previous_shortfall_count;
 static bool edge_quarantine_pending;
 static uint32_t edge_activation_epoch;
+
+static void edge_clear_dma_progress(void)
+{
+	edge_dma_source_offset = 0;
+	edge_dma_destination_offset = 0;
+	edge_dma_remaining = 0;
+}
+
+static void edge_reset_dma_ownership(uint32_t activation_epoch)
+{
+	edge_transport_reset(&edge_transport, activation_epoch);
+	edge_clear_dma_progress();
+}
+
+static void edge_abandon_dma_ownership(void)
+{
+	edge_transport_cancel_dma(&edge_transport);
+	edge_clear_dma_progress();
+}
 
 typedef struct {
 	uint32_t freq_mhz;
@@ -387,6 +408,7 @@ void transceiver_startup(const transceiver_mode_t mode)
 	dma_pending = 0;
 	usb_started = 0;
 	usb_completed = 0;
+	edge_reset_dma_ownership(edge_activation_epoch);
 
 	transceiver_dma_setup();
 
@@ -555,10 +577,7 @@ void transceiver_start_dma(void* src, void* dest, size_t size)
 
 static void edge_stream_reset(uint32_t activation_epoch)
 {
-	edge_transport_reset(&edge_transport, activation_epoch);
-	edge_dma_source_offset = 0;
-	edge_dma_destination_offset = 0;
-	edge_dma_remaining = 0;
+	edge_reset_dma_ownership(activation_epoch);
 	edge_previous_total_shortfall =
 		m0_confirmed_shortfall_bytes(&m0_state);
 	edge_previous_shortfall_count = m0_state.num_shortfalls;
@@ -575,16 +594,26 @@ static uint32_t current_sample_rate_hz(void)
 	return (uint32_t) ((rate + (SR_FP_ONE_HZ / 2u)) / SR_FP_ONE_HZ);
 }
 
-static void edge_start_next_dma_chunk(void)
+static bool edge_start_next_dma_chunk(void)
 {
+	if (edge_dma_remaining == 0 ||
+	    edge_dma_source_offset >= USB_SAMP_BUFFER_SIZE ||
+	    edge_dma_destination_offset >= USB_BULK_BUFFER_SIZE) {
+		return false;
+	}
 	uint32_t chunk = USB_SAMP_BUFFER_SIZE - edge_dma_source_offset;
 	if (chunk > edge_dma_remaining) {
 		chunk = edge_dma_remaining;
+	}
+	if (chunk == 0 || chunk > DMA_MAX_TRANSFER_SIZE || (chunk & 3u) != 0 ||
+	    chunk > USB_BULK_BUFFER_SIZE - edge_dma_destination_offset) {
+		return false;
 	}
 	transceiver_start_dma(
 		&usb_samp_buffer[edge_dma_source_offset],
 		&usb_bulk_buffer[edge_dma_destination_offset],
 		chunk);
+	return true;
 }
 
 // Called when a DMA transfer completes.
@@ -597,16 +626,32 @@ void dma_isr_impl(void)
 	m0_state.m4_count += completed;
 	dma_pending = 0;
 
-	if (edge_transport.dma_slot != EDGE_TRANSPORT_SLOT_NONE) {
-		edge_dma_source_offset =
-			(edge_dma_source_offset + completed) & USB_SAMP_BUFFER_MASK;
-		edge_dma_destination_offset += completed;
-		edge_dma_remaining -= completed;
+	if (!edge_transport_dma_owned(&edge_transport)) {
 		if (edge_dma_remaining != 0) {
-			edge_start_next_dma_chunk();
-		} else {
-			(void) edge_transport_finish_dma(&edge_transport, NULL);
+			edge_abandon_dma_ownership();
+			edge_note_loss_uncertain(edge_activation_epoch);
 		}
+		return;
+	}
+	if (!edge_transport_dma_chunk_valid(
+		    &edge_transport, completed, edge_dma_remaining)) {
+		edge_abandon_dma_ownership();
+		edge_note_loss_uncertain(edge_activation_epoch);
+		return;
+	}
+
+	edge_dma_source_offset =
+		(edge_dma_source_offset + completed) & USB_SAMP_BUFFER_MASK;
+	edge_dma_destination_offset += completed;
+	edge_dma_remaining -= completed;
+	if (edge_dma_remaining != 0) {
+		if (!edge_start_next_dma_chunk()) {
+			edge_abandon_dma_ownership();
+			edge_note_loss_uncertain(edge_activation_epoch);
+		}
+	} else if (!edge_transport_finish_dma(&edge_transport, NULL)) {
+		edge_abandon_dma_ownership();
+		edge_note_loss_uncertain(edge_activation_epoch);
 	}
 }
 
@@ -821,7 +866,10 @@ static void edge_start_dma_if_possible(
 	edge_dma_destination_offset = slot_offset + EDGE_FRAME_HEADER_BYTES;
 	edge_dma_remaining = EDGE_FRAME_PAYLOAD_BYTES;
 	dma_started += EDGE_FRAME_PAYLOAD_BYTES;
-	edge_start_next_dma_chunk();
+	if (!edge_start_next_dma_chunk()) {
+		edge_abandon_dma_ownership();
+		edge_note_loss_uncertain(edge_activation_epoch);
+	}
 }
 
 static void edge_start_usb_if_possible(uint32_t request_sequence)

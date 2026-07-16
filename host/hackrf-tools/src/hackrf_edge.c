@@ -124,7 +124,7 @@ static void print_capabilities(const hackrf_edge_capabilities* capabilities)
 
 static void print_config(const hackrf_edge_config* config)
 {
-	printf("Requested profile: %s (%u)\n",
+	printf("Config profile: %s (%u)\n",
 	       profile_name(config->profile),
 	       config->profile);
 	printf("Config flags: 0x%08" PRIx32 "\n", config->flags);
