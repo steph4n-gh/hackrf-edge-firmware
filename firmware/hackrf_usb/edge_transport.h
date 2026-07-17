@@ -39,8 +39,9 @@ typedef struct {
 	/* At most one slot may be USB-owned, so one persistent serial identifies
 	 * the current submission without a duplicate serial in every slot. This
 	 * counter intentionally survives edge_transport_reset(): each slot is reused
-	 * many times during a continuous stream. The state object must therefore be
-	 * zero-initialized before its first reset (static storage is sufficient). */
+	 * many times during a continuous stream. The completion serial and all
+	 * otherwise-unspecified initializer fields must start at zero; dma_slot must
+	 * use EDGE_TRANSPORT_STATE_INITIALIZER's explicit NONE sentinel. */
 	uint32_t next_completion_serial;
 } edge_transport_state_t;
 

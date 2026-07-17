@@ -48,20 +48,136 @@ static uintptr_t make_usb_ready(
 static void test_static_initializer_is_legacy_safe(void)
 {
 	edge_transport_state_t transport = EDGE_TRANSPORT_STATE_INITIALIZER;
-	uint32_t legacy_bytes = 0;
 
 	assert(edge_transport_invariant(&transport));
 	assert(!edge_transport_dma_owned(&transport));
 	assert(!edge_transport_dma_chunk_valid(&transport, 8192, 0));
+}
 
-	/* Model legacy-first RX and TX for several sample/USB ring wraps.  Their
-	 * shared DMA completions must never acquire framed continuation ownership. */
-	for (unsigned int transfer = 0; transfer < 32; ++transfer) {
-		legacy_bytes += 8192;
-		assert(!edge_transport_dma_owned(&transport));
-		assert(!edge_transport_dma_chunk_valid(&transport, 8192, 0));
+typedef struct {
+	edge_transport_state_t transport;
+	uint64_t m4_count;
+	uint32_t dma_pending;
+	uint32_t dma_remaining;
+	unsigned int continuations;
+	unsigned int invalid_abandons;
+} shared_dma_model_t;
+
+static void modeled_shared_dma_isr(shared_dma_model_t* model)
+{
+	const uint32_t completed = model->dma_pending;
+	model->m4_count += completed;
+	model->dma_pending = 0;
+	if (!edge_transport_dma_owned(&model->transport)) {
+		if (model->dma_remaining != 0) {
+			edge_transport_cancel_dma(&model->transport);
+			model->dma_remaining = 0;
+			model->invalid_abandons++;
+		}
+		return;
 	}
-	assert(legacy_bytes == 262144);
+	if (!edge_transport_dma_chunk_valid(
+		    &model->transport, completed, model->dma_remaining)) {
+		edge_transport_cancel_dma(&model->transport);
+		model->dma_remaining = 0;
+		model->invalid_abandons++;
+		return;
+	}
+	model->dma_remaining -= completed;
+	if (model->dma_remaining != 0) {
+		model->dma_pending = model->dma_remaining;
+		model->continuations++;
+	} else {
+		assert(edge_transport_finish_dma(&model->transport, NULL));
+	}
+}
+
+static void run_legacy_first_dma_model(void)
+{
+	shared_dma_model_t model = {
+		.transport = EDGE_TRANSPORT_STATE_INITIALIZER,
+	};
+
+	/* 64 ordinary 8 KiB completions cover sixteen 32 KiB sample-buffer wraps.
+	 * This is the exact ISR entry shared by legacy RX and TX. */
+	for (unsigned int transfer = 0; transfer < 64; ++transfer) {
+		model.dma_pending = 8192;
+		modeled_shared_dma_isr(&model);
+		assert(model.m4_count == (uint64_t) (transfer + 1) * 8192u);
+		assert(model.dma_pending == 0);
+		assert(model.dma_remaining == 0);
+		assert(model.continuations == 0);
+		assert(model.invalid_abandons == 0);
+		assert(!edge_transport_dma_owned(&model.transport));
+		assert(edge_transport_invariant(&model.transport));
+	}
+}
+
+static void test_legacy_first_rx_tx_shared_isr(void)
+{
+	run_legacy_first_dma_model();
+	run_legacy_first_dma_model();
+}
+
+static void test_framed_dma_chunk_boundaries(void)
+{
+	const uint32_t sample_buffer_size = 32768;
+	const uint32_t sample_buffer_mask = sample_buffer_size - 1;
+	const uint32_t bulk_buffer_size = 32768;
+	const uint32_t frame_size = 16384;
+	const uint32_t header_size = 64;
+	const uint32_t payload_size = 16320;
+	const uint32_t dma_max = 16380;
+
+	for (uint32_t slot = 0; slot < 2; ++slot) {
+		for (uint32_t source = 0; source < sample_buffer_size; source += 32) {
+			uint32_t source_offset = source;
+			uint32_t destination_offset = slot * frame_size + header_size;
+			uint32_t remaining = payload_size;
+			uint32_t copied = 0;
+			unsigned int chunks = 0;
+			while (remaining != 0) {
+				uint32_t chunk = sample_buffer_size - source_offset;
+				if (chunk > remaining) {
+					chunk = remaining;
+				}
+				assert(chunk != 0);
+				assert((chunk & 3u) == 0);
+				assert(chunk <= dma_max);
+				assert(destination_offset < bulk_buffer_size);
+				assert(chunk <= bulk_buffer_size - destination_offset);
+				source_offset =
+					(source_offset + chunk) & sample_buffer_mask;
+				destination_offset += chunk;
+				remaining -= chunk;
+				copied += chunk;
+				chunks++;
+			}
+			assert(copied == payload_size);
+			assert(destination_offset == (slot + 1) * frame_size);
+			assert(chunks >= 1 && chunks <= 2);
+		}
+	}
+}
+
+static void test_invalid_dma_completion_is_abandoned(void)
+{
+	for (unsigned int invalid_kind = 0; invalid_kind < 2; ++invalid_kind) {
+		shared_dma_model_t model = {
+			.transport = EDGE_TRANSPORT_STATE_INITIALIZER,
+			.dma_pending = invalid_kind == 0 ? 0 : 16321,
+			.dma_remaining = 16320,
+		};
+		edge_transport_reset(&model.transport, 6);
+		assert(edge_transport_begin_dma(&model.transport, 0, 6));
+		modeled_shared_dma_isr(&model);
+		assert(model.invalid_abandons == 1);
+		assert(model.dma_remaining == 0);
+		assert(model.dma_pending == 0);
+		assert(!edge_transport_dma_owned(&model.transport));
+		assert(edge_transport_dma_candidate(&model.transport) == 0);
+		assert(edge_transport_invariant(&model.transport));
+	}
 }
 
 static void test_pipeline_and_queue_ownership(void)
@@ -426,6 +542,9 @@ static void test_invalid_operations_preserve_invariants(void)
 int main(void)
 {
 	test_static_initializer_is_legacy_safe();
+	test_legacy_first_rx_tx_shared_isr();
+	test_framed_dma_chunk_boundaries();
+	test_invalid_dma_completion_is_abandoned();
 	test_pipeline_and_queue_ownership();
 	test_schedule_failure_is_retryable();
 	test_stale_completion_cannot_release_reused_slot();
