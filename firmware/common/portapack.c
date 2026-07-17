@@ -353,53 +353,34 @@ static void portapack_lcd_init(void)
 {
 	uint32_t dispid = portapack_lcd_read_display_id();
 	if (dispid == 5537894) {
+		static const uint8_t cmd_e0[] = {
+			0x00, 0x09, 0x0C, 0x03, 0x10, 0x06, 0x34, 0x68,
+			0x49, 0x02, 0x0A, 0x07, 0x2C, 0x31, 0x0F};
+		static const uint8_t cmd_e1[] = {
+			0x00, 0x12, 0x15, 0x02, 0x10, 0x06, 0x35, 0x35,
+			0x4A, 0x05, 0x10, 0x0C, 0x2F, 0x33, 0x0F};
+		static const uint8_t cmd_c0[] = {0x0F, 0x0F};
+		static const uint8_t cmd_c5[] = {0x00, 0x66, 0x80};
+		static const uint8_t cmd_b1[] = {0xA0, 0x11};
+		static const uint8_t cmd_f7[] = {0xA9, 0x51, 0x2C, 0x82};
+
 		screen_height = 480;
 		screen_width = 320;
 		//portarf display init
 		portapack_lcd_data_write_command_and_data(
 			0xE0,
-			(const uint8_t[]){
-				0x00,
-				0x09,
-				0x0C,
-				0x03,
-				0x10,
-				0x06,
-				0x34,
-				0x68,
-				0x49,
-				0x02,
-				0x0A,
-				0x07,
-				0x2C,
-				0x31,
-				0x0F},
-			15);
+			cmd_e0,
+			ARRAY_SIZEOF(cmd_e0));
 
 		portapack_lcd_data_write_command_and_data(
 			0xE1,
-			(const uint8_t[]){
-				0x00,
-				0x12,
-				0x15,
-				0x02,
-				0x10,
-				0x06,
-				0x35,
-				0x35,
-				0x4A,
-				0x05,
-				0x10,
-				0x0C,
-				0x2F,
-				0x33,
-				0x0F},
-			15);
+			cmd_e1,
+			ARRAY_SIZEOF(cmd_e1));
 
 		portapack_lcd_data_write_command_and_data(
 			0xC0,
-			(const uint8_t[]){0x0F, 0x0F},
-			2); // Vreg1out=4.5 Vreg2out=-4.5
+			cmd_c0,
+			ARRAY_SIZEOF(cmd_c0)); // Vreg1out=4.5 Vreg2out=-4.5
 
 		portapack_lcd_data_write_command_and_data(
 			0xC1,
@@ -408,8 +389,8 @@ static void portapack_lcd_init(void)
 
 		portapack_lcd_data_write_command_and_data(
 			0xC5,
-			(const uint8_t[]){0x00, 0x66, 0x80},
-			3); // VCOM
+			cmd_c5,
+			ARRAY_SIZEOF(cmd_c5)); // VCOM
 
 		portapack_lcd_data_write_command_and_data(
 			0x36,
@@ -432,8 +413,8 @@ static void portapack_lcd_init(void)
 		// portapack_lcd_data_write_command_and_data(0xB1, {0x40, 0x1F});  // fix 60 fps
 		portapack_lcd_data_write_command_and_data(
 			0xB1,
-			(const uint8_t[]){0xA0, 0x11},
-			2); // Frame rate source is 11fps
+			cmd_b1,
+			ARRAY_SIZEOF(cmd_b1)); // Frame rate source is 11fps
 
 		portapack_lcd_data_write_command_and_data(
 			0xB4,
@@ -452,8 +433,8 @@ static void portapack_lcd_init(void)
 
 		portapack_lcd_data_write_command_and_data(
 			0xF7,
-			(const uint8_t[]){0xA9, 0x51, 0x2C, 0x82},
-			4);
+			cmd_f7,
+			ARRAY_SIZEOF(cmd_f7));
 
 		portapack_lcd_data_write_command_and_data(
 			0x21,
@@ -486,30 +467,30 @@ static void portapack_lcd_init(void)
 	// Power control B
 	// 0
 	// PCEQ=1, DRV_ena=0, Power control=3
-	const uint8_t cmd_cf[] = {0x00, 0xD9, 0x30};
+	static const uint8_t cmd_cf[] = {0x00, 0xD9, 0x30};
 	portapack_lcd_data_write_command_and_data(0xCF, cmd_cf, ARRAY_SIZEOF(cmd_cf));
 
 	// Power on sequence control
-	const uint8_t cmd_ed[] = {0x64, 0x03, 0x12, 0x81};
+	static const uint8_t cmd_ed[] = {0x64, 0x03, 0x12, 0x81};
 	portapack_lcd_data_write_command_and_data(0xED, cmd_ed, ARRAY_SIZEOF(cmd_ed));
 
 	// Driver timing control A
-	const uint8_t cmd_e8[] = {0x85, 0x10, 0x78};
+	static const uint8_t cmd_e8[] = {0x85, 0x10, 0x78};
 	portapack_lcd_data_write_command_and_data(0xE8, cmd_e8, ARRAY_SIZEOF(cmd_e8));
 
 	// Power control A
-	const uint8_t cmd_cb[] = {0x39, 0x2C, 0x00, 0x34, 0x02};
+	static const uint8_t cmd_cb[] = {0x39, 0x2C, 0x00, 0x34, 0x02};
 	portapack_lcd_data_write_command_and_data(0xCB, cmd_cb, ARRAY_SIZEOF(cmd_cb));
 
 	// Pump ratio control
-	const uint8_t cmd_f7[] = {0x20};
+	static const uint8_t cmd_f7[] = {0x20};
 	portapack_lcd_data_write_command_and_data(0xF7, cmd_f7, ARRAY_SIZEOF(cmd_f7));
 
 	// Driver timing control B
-	const uint8_t cmd_ea[] = {0x00, 0x00};
+	static const uint8_t cmd_ea[] = {0x00, 0x00};
 	portapack_lcd_data_write_command_and_data(0xEA, cmd_ea, ARRAY_SIZEOF(cmd_ea));
 
-	const uint8_t cmd_b1[] = {0x00, 0x1B};
+	static const uint8_t cmd_b1[] = {0x00, 0x1B};
 	portapack_lcd_data_write_command_and_data(0xB1, cmd_b1, ARRAY_SIZEOF(cmd_b1));
 
 	// Blanking Porch Control
@@ -517,7 +498,7 @@ static void portapack_lcd_init(void)
 	// VBP = 0b0000010 = 2 (number of HSYNC of vertical back porch)
 	// HFP = 0b0001010 = 10 (number of DOTCLOCK of horizontal front porch)
 	// HBP = 0b0010100 = 20 (number of DOTCLOCK of horizontal back porch)
-	const uint8_t cmd_b5[] = {0x02, 0x02, 0x0a, 0x14};
+	static const uint8_t cmd_b5[] = {0x02, 0x02, 0x0a, 0x14};
 	portapack_lcd_data_write_command_and_data(0xB5, cmd_b5, ARRAY_SIZEOF(cmd_b5));
 
 	// Display Function Control
@@ -530,31 +511,31 @@ static void portapack_lcd_init(void)
 	// REV = 1 (normally white)
 	// NL = 0b100111 (default)
 	// PCDIV = 0b000000 (default?)
-	const uint8_t cmd_b6[] = {0x0A, 0xA2, 0x27, 0x00};
+	static const uint8_t cmd_b6[] = {0x0A, 0xA2, 0x27, 0x00};
 	portapack_lcd_data_write_command_and_data(0xB6, cmd_b6, ARRAY_SIZEOF(cmd_b6));
 
 	// Power Control 1
 	//VRH[5:0]
-	const uint8_t cmd_c0[] = {0x1B};
+	static const uint8_t cmd_c0[] = {0x1B};
 	portapack_lcd_data_write_command_and_data(0xC0, cmd_c0, ARRAY_SIZEOF(cmd_c0));
 
 	// Power Control 2
 	//SAP[2:0];BT[3:0]
-	const uint8_t cmd_c1[] = {0x12};
+	static const uint8_t cmd_c1[] = {0x12};
 	portapack_lcd_data_write_command_and_data(0xC1, cmd_c1, ARRAY_SIZEOF(cmd_c1));
 
 	// VCOM Control 1
-	const uint8_t cmd_c5[] = {0x32, 0x3C};
+	static const uint8_t cmd_c5[] = {0x32, 0x3C};
 	portapack_lcd_data_write_command_and_data(0xC5, cmd_c5, ARRAY_SIZEOF(cmd_c5));
 
 	// VCOM Control 2
-	const uint8_t cmd_c7[] = {0x9B};
+	static const uint8_t cmd_c7[] = {0x9B};
 	portapack_lcd_data_write_command_and_data(0xC7, cmd_c7, ARRAY_SIZEOF(cmd_c7));
 
 	// Memory Access Control
 	// Invert X and Y memory access order, so upper-left of
 	// screen is (0,0) when writing to display.
-	const uint8_t cmd_36[] = {
+	static const uint8_t cmd_36[] = {
 		(1 << 7) | // MY=1
 		(1 << 6) | // MX=1
 		(0 << 5) | // MV=0
@@ -565,7 +546,7 @@ static void portapack_lcd_init(void)
 
 	// COLMOD: Pixel Format Set
 	// DPI=101 (16 bits/pixel), DBI=101 (16 bits/pixel)
-	const uint8_t cmd_3a[] = {0x55};
+	static const uint8_t cmd_3a[] = {0x55};
 	portapack_lcd_data_write_command_and_data(0x3A, cmd_3a, ARRAY_SIZEOF(cmd_3a));
 
 	//portapack_lcd_data_write_command_and_data(0xF6, { 0x01, 0x30 });
@@ -576,19 +557,19 @@ static void portapack_lcd_init(void)
 	// RM=0 (system interface/VSYNC interface)
 	// DM[1:0]=00 (internal clock operation)
 	// ENDIAN=0 (doesn't matter with 16-bit interface)
-	const uint8_t cmd_f6[] = {0x01, 0x30, 0x00};
+	static const uint8_t cmd_f6[] = {0x01, 0x30, 0x00};
 	portapack_lcd_data_write_command_and_data(0xF6, cmd_f6, ARRAY_SIZEOF(cmd_f6));
 
 	// 3Gamma Function Disable
-	const uint8_t cmd_f2[] = {0x00};
+	static const uint8_t cmd_f2[] = {0x00};
 	portapack_lcd_data_write_command_and_data(0xF2, cmd_f2, ARRAY_SIZEOF(cmd_f2));
 
 	// Gamma curve selected
-	const uint8_t cmd_26[] = {0x01};
+	static const uint8_t cmd_26[] = {0x01};
 	portapack_lcd_data_write_command_and_data(0x26, cmd_26, ARRAY_SIZEOF(cmd_26));
 
 	// Set Gamma
-	const uint8_t cmd_e0[] = {
+	static const uint8_t cmd_e0[] = {
 		0x0F,
 		0x1D,
 		0x19,
@@ -607,7 +588,7 @@ static void portapack_lcd_init(void)
 	portapack_lcd_data_write_command_and_data(0xE0, cmd_e0, ARRAY_SIZEOF(cmd_e0));
 
 	// Set Gamma
-	const uint8_t cmd_e1[] = {
+	static const uint8_t cmd_e1[] = {
 		0x00,
 		0x1C,
 		0x1F,
@@ -628,7 +609,7 @@ static void portapack_lcd_init(void)
 	portapack_lcd_wake();
 
 	// Turn on Tearing Effect Line (TE) output signal.
-	const uint8_t cmd_35[] = {0b00000000};
+	static const uint8_t cmd_35[] = {0b00000000};
 	portapack_lcd_data_write_command_and_data(0x35, cmd_35, ARRAY_SIZEOF(cmd_35));
 }
 

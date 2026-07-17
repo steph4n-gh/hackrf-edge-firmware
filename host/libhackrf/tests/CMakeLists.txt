@@ -116,6 +116,12 @@ if(NOT MSVC)
       ${CMAKE_CURRENT_SOURCE_DIR}/../../../firmware/hackrf_usb/usb_api_transceiver.c)
 
   add_test(
+    NAME hackrf_portapack_lcd_init_contract
+    COMMAND
+      python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_portapack_lcd_init_contract.py
+      ${CMAKE_CURRENT_SOURCE_DIR}/../../../firmware/common/portapack.c)
+
+  add_test(
     NAME hackrf_edge_cli_output_contract
     COMMAND
       python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_edge_cli_output_contract.py
