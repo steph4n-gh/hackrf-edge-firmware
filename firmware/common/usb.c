@@ -116,15 +116,25 @@ static void usb_wait_for_endpoint_flushing_to_finish(const uint32_t mask)
 	while (USB0_ENDPTFLUSH & mask) {}
 }
 
+/* Share one register-polling sequence between startup and the retry loop in
+ * the aggregate's constrained flash budget. */
+static void usb_flush_primed_endpoints_once(const uint32_t mask)
+	__attribute__((noinline));
+
+static void usb_flush_primed_endpoints_once(const uint32_t mask)
+{
+	usb_wait_for_endpoint_priming_to_finish(mask);
+	usb_flush_endpoints(mask);
+	usb_wait_for_endpoint_flushing_to_finish(mask);
+}
+
 static void usb_flush_primed_endpoints(const uint32_t mask)
 {
 	/* UM10503's de-prime procedure requires ENDPTSTAT verification after
 	 * ENDPTFLUSH clears. A packet already in progress may make the controller
 	 * refuse one flush attempt so that the packet can finish safely. */
 	do {
-		usb_wait_for_endpoint_priming_to_finish(mask);
-		usb_flush_endpoints(mask);
-		usb_wait_for_endpoint_flushing_to_finish(mask);
+		usb_flush_primed_endpoints_once(mask);
 	} while (USB0_ENDPTSTAT & mask);
 }
 
@@ -444,7 +454,16 @@ static void usb_controller_reset(void)
 {
 	// TODO: Good to disable some USB interrupts to avoid priming new
 	// new endpoints before the controller is reset?
-	usb_reset_all_endpoints();
+	usb_disable_all_endpoints();
+	usb_clear_all_pending_interrupts();
+	/* ROM DFU can hand off an ENDPTSTAT bit backed by its own queue-head
+	 * state. Repeating the normal de-prime loop against that inherited state
+	 * can prevent this controller reset, and therefore USB enumeration, from
+	 * ever completing. One single-pass flush matches the observed working ROM
+	 * handoff; the reset below discards the remaining inherited controller state.
+	 * Runtime endpoint aborts and USB bus resets still use the full UM10503
+	 * retry procedure. */
+	usb_flush_primed_endpoints_once(0xFFFFFFFF);
 	usb_controller_stop();
 
 	// Reset controller. Resets internal pipelines, timers, counters, state

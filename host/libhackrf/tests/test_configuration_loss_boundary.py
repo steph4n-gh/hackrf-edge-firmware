@@ -81,6 +81,22 @@ def main():
 		"EDGE_FRAME_BYTES,\n\t\t\tbulk_in_completion_observed," in request_mode,
 		"OFF completion reconciliation no longer consumes its COMPLETE witness",
 	)
+	flush_once = function_body(
+		common_usb, "static void usb_flush_primed_endpoints_once("
+	)
+	require(
+		ordered(
+			flush_once,
+			"usb_wait_for_endpoint_priming_to_finish(mask);",
+			"usb_flush_endpoints(mask);",
+			"usb_wait_for_endpoint_flushing_to_finish(mask);",
+		),
+		"single-pass endpoint flush no longer performs one de-prime attempt",
+	)
+	require(
+		"USB0_ENDPTSTAT" not in flush_once,
+		"single-pass ROM handoff flush acquired an ENDPTSTAT retry",
+	)
 	flush_primed = function_body(
 		common_usb, "static void usb_flush_primed_endpoints("
 	)
@@ -88,12 +104,62 @@ def main():
 		ordered(
 			flush_primed,
 			"do {",
-			"usb_wait_for_endpoint_priming_to_finish(mask);",
-			"usb_flush_endpoints(mask);",
-			"usb_wait_for_endpoint_flushing_to_finish(mask);",
+			"usb_flush_primed_endpoints_once(mask);",
 			"} while (USB0_ENDPTSTAT & mask);",
 		),
 		"endpoint flush no longer retries controller-refused de-prime attempts",
+	)
+	controller_reset = function_body(common_usb, "static void usb_controller_reset(")
+	require(
+		ordered(
+			controller_reset,
+			"usb_disable_all_endpoints();",
+			"usb_clear_all_pending_interrupts();",
+			"usb_flush_primed_endpoints_once(0xFFFFFFFF);",
+			"usb_controller_stop();",
+			"USB0_USBCMD_D = USB0_USBCMD_D_RST;",
+		),
+		"ROM handoff no longer uses a single-pass flush before controller reset",
+	)
+	require(
+		"usb_reset_all_endpoints();" not in controller_reset,
+		"ROM handoff can re-enter the ENDPTSTAT retry loop before reset",
+	)
+	require(
+		"USB0_ENDPTSTAT" not in controller_reset
+		and "usb_flush_primed_endpoints(" not in controller_reset
+		and controller_reset.count(
+			"usb_flush_primed_endpoints_once(0xFFFFFFFF);"
+		)
+		== 1,
+		"ROM handoff must make exactly one single-pass flush attempt",
+	)
+	reset_all = function_body(common_usb, "static void usb_reset_all_endpoints(")
+	require(
+		ordered(
+			reset_all,
+			"usb_disable_all_endpoints();",
+			"usb_clear_all_pending_interrupts();",
+			"usb_flush_all_primed_endpoints();",
+		),
+		"full endpoint reset no longer disables, clears, then de-primes",
+	)
+	flush_all = function_body(
+		common_usb, "static void usb_flush_all_primed_endpoints("
+	)
+	require(
+		"usb_flush_primed_endpoints(0xFFFFFFFF);" in flush_all,
+		"full endpoint reset no longer uses the ENDPTSTAT retry helper",
+	)
+	endpoint_flush = function_body(common_usb, "void usb_endpoint_flush(")
+	require(
+		endpoint_flush.count("usb_flush_primed_endpoints(") == 2
+		and "usb_flush_primed_endpoints_once(" not in endpoint_flush,
+		"runtime endpoint abort no longer uses the ENDPTSTAT retry helper",
+	)
+	require(
+		"usb_reset_all_endpoints();" in bus_reset,
+		"USB bus reset no longer uses the full endpoint de-prime procedure",
 	)
 	for status in (
 		"USB_TD_DTD_TOKEN_STATUS_ACTIVE",
