@@ -14,6 +14,7 @@ typedef struct {
 
 typedef struct _usb_endpoint_t {
 	usb_setup_t setup;
+	uint8_t buffer[32];
 	struct _usb_endpoint_t* in;
 	struct _usb_endpoint_t* out;
 } usb_endpoint_t;

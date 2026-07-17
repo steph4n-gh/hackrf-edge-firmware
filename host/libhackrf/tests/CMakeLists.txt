@@ -31,6 +31,20 @@ endif()
 
 add_test(NAME hackrf_serial_matching COMMAND hackrf_serial_test)
 
+add_executable(hackrf_spiflash_geometry_test test_spiflash_geometry.c)
+target_compile_features(hackrf_spiflash_geometry_test PRIVATE c_std_90)
+target_include_directories(
+  hackrf_spiflash_geometry_test
+  PRIVATE ../src ../../hackrf-tools/src)
+if(MSVC)
+  target_compile_options(hackrf_spiflash_geometry_test PRIVATE /W4 /WX)
+else()
+  target_compile_options(
+    hackrf_spiflash_geometry_test PRIVATE -Wall -Wextra -Werror)
+endif()
+
+add_test(NAME hackrf_spiflash_geometry COMMAND hackrf_spiflash_geometry_test)
+
 # Compile-time routing keeps mocked discovery independent of whether the
 # selected libusb package is a shared or static library. Windows import
 # declarations do not provide the same portable override seam.
@@ -84,6 +98,21 @@ if(NOT MSVC)
     hackrf_edge_firmware_test PRIVATE -Wall -Wextra -Werror)
 
   add_test(NAME hackrf_edge_firmware_protocol COMMAND hackrf_edge_firmware_test)
+
+  add_executable(
+    hackrf_spiflash_firmware_test
+    test_firmware_spiflash.c
+    ../../../firmware/hackrf_usb/usb_api_spiflash.c)
+  target_compile_features(hackrf_spiflash_firmware_test PRIVATE c_std_99)
+  target_include_directories(
+    hackrf_spiflash_firmware_test
+    PRIVATE firmware_edge_mocks ../../../firmware/hackrf_usb)
+  target_compile_options(
+    hackrf_spiflash_firmware_test PRIVATE -Wall -Wextra -Werror)
+
+  add_test(
+    NAME hackrf_spiflash_firmware_bounds
+    COMMAND hackrf_spiflash_firmware_test)
 
   add_executable(hackrf_edge_transport_test test_edge_transport.c)
   target_compile_features(hackrf_edge_transport_test PRIVATE c_std_99)

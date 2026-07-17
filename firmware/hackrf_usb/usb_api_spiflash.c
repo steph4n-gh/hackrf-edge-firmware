@@ -34,6 +34,21 @@
 /* Buffer size == spi_flash.page_len */
 uint8_t spiflash_buffer[256U];
 
+static uint32_t spiflash_request_address(const usb_endpoint_t* const endpoint)
+{
+	return ((uint32_t) endpoint->setup.value << 16) |
+	       (uint32_t) endpoint->setup.index;
+}
+
+static int spiflash_request_is_valid(uint32_t addr, uint16_t len)
+{
+	const size_t address = (size_t) addr;
+	const size_t length = (size_t) len;
+	return (length != 0U) && (length <= spi_flash.page_len) &&
+	       (address <= spi_flash.num_bytes) &&
+	       (length <= (spi_flash.num_bytes - address));
+}
+
 usb_request_status_t usb_vendor_request_erase_spiflash(
 	usb_endpoint_t* const endpoint,
 	const usb_transfer_stage_t stage)
@@ -55,10 +70,9 @@ usb_request_status_t usb_vendor_request_write_spiflash(
 	uint16_t len = 0;
 
 	if (stage == USB_TRANSFER_STAGE_SETUP) {
-		addr = (endpoint->setup.value << 16) | endpoint->setup.index;
+		addr = spiflash_request_address(endpoint);
 		len = endpoint->setup.length;
-		if ((len > spi_flash.page_len) || (addr > spi_flash.num_bytes) ||
-		    ((addr + len) > spi_flash.num_bytes)) {
+		if (!spiflash_request_is_valid(addr, len)) {
 			return USB_REQUEST_STATUS_STALL;
 		} else {
 			usb_transfer_schedule_block(
@@ -71,11 +85,10 @@ usb_request_status_t usb_vendor_request_write_spiflash(
 			return USB_REQUEST_STATUS_OK;
 		}
 	} else if (stage == USB_TRANSFER_STAGE_DATA) {
-		addr = (endpoint->setup.value << 16) | endpoint->setup.index;
+		addr = spiflash_request_address(endpoint);
 		len = endpoint->setup.length;
 		/* This check is redundant but makes me feel better. */
-		if ((len > spi_flash.page_len) || (addr > spi_flash.num_bytes) ||
-		    ((addr + len) > spi_flash.num_bytes)) {
+		if (!spiflash_request_is_valid(addr, len)) {
 			return USB_REQUEST_STATUS_STALL;
 		} else {
 			w25q80bv_program(&spi_flash, addr, len, &spiflash_buffer[0]);
@@ -95,10 +108,9 @@ usb_request_status_t usb_vendor_request_read_spiflash(
 	uint16_t len;
 
 	if (stage == USB_TRANSFER_STAGE_SETUP) {
-		addr = (endpoint->setup.value << 16) | endpoint->setup.index;
+		addr = spiflash_request_address(endpoint);
 		len = endpoint->setup.length;
-		if ((len > spi_flash.page_len) || (addr > spi_flash.num_bytes) ||
-		    ((addr + len) > spi_flash.num_bytes)) {
+		if (!spiflash_request_is_valid(addr, len)) {
 			return USB_REQUEST_STATUS_STALL;
 		} else {
 			w25q80bv_read(&spi_flash, addr, len, &spiflash_buffer[0]);
@@ -112,11 +124,10 @@ usb_request_status_t usb_vendor_request_read_spiflash(
 			return USB_REQUEST_STATUS_OK;
 		}
 	} else if (stage == USB_TRANSFER_STAGE_DATA) {
-		addr = (endpoint->setup.value << 16) | endpoint->setup.index;
+		addr = spiflash_request_address(endpoint);
 		len = endpoint->setup.length;
 		/* This check is redundant but makes me feel better. */
-		if ((len > spi_flash.page_len) || (addr > spi_flash.num_bytes) ||
-		    ((addr + len) > spi_flash.num_bytes)) {
+		if (!spiflash_request_is_valid(addr, len)) {
 			return USB_REQUEST_STATUS_STALL;
 		} else {
 			return USB_REQUEST_STATUS_OK;

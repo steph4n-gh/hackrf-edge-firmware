@@ -30,6 +30,8 @@
 #include <getopt.h>
 #include <sys/types.h>
 
+#include "hackrf_spiflash_geometry.h"
+
 #ifdef _MSC_VER
 	#ifdef _WIN64
 typedef int64_t ssize_t;
@@ -37,15 +39,6 @@ typedef int64_t ssize_t;
 typedef int32_t ssize_t;
 	#endif
 #endif
-
-/* 32 Mbit flash */
-#define PRALINE_FLASH_LENGTH 0x400000
-/* 16 Mbit flash */
-#define PORTARF_FLASH_LENGTH 0x200000
-/* 8 Mbit flash */
-#define OTHER_FLASH_LENGTH 0x100000
-
-#define MAX_LENGTH PRALINE_FLASH_LENGTH
 
 static struct option long_options[] = {
 	{"address", required_argument, 0, 'a'},
@@ -218,7 +211,7 @@ int main(int argc, char** argv)
 	hackrf_device* device = NULL;
 	int result = HACKRF_SUCCESS;
 	int option_index = 0;
-	static uint8_t data[MAX_LENGTH];
+	static uint8_t data[HACKRF_SPIFLASH_MAX_LENGTH];
 	uint8_t* pdata = &data[0];
 	FILE* infile = NULL;
 	bool read = false;
@@ -359,15 +352,7 @@ int main(int argc, char** argv)
 
 	hackrf_board_id_read(device, &board_id);
 
-	if (board_id == BOARD_ID_PRALINE) {
-		flash_length = PRALINE_FLASH_LENGTH;
-	} else if (
-		board_id ==
-		BOARD_ID_HACKRF1_OG) { // This is the version for the PortaRF, so we assume it has the 16 Mbit flash, but this is not guaranteed to be correct for all OG HackRF Ones
-		flash_length = PORTARF_FLASH_LENGTH;
-	} else {
-		flash_length = OTHER_FLASH_LENGTH;
-	}
+	flash_length = hackrf_spiflash_default_length(board_id);
 
 	if (!length_specified) {
 		length = flash_length - address;
@@ -382,8 +367,7 @@ int main(int argc, char** argv)
 		return EXIT_FAILURE;
 	}
 
-	if ((length > flash_length) || (address > flash_length) ||
-	    ((address + length) > flash_length)) {
+	if (!hackrf_spiflash_range_is_valid(address, length, flash_length)) {
 		fprintf(stderr, "Request exceeds size of flash memory.\n");
 		if (infile != NULL) {
 			fclose(infile);
