@@ -55,7 +55,7 @@ static USB_DEFINE_QUEUE(usb_endpoint_control_in, 4);
 // actually a good idea. Seems like everybody does it that way, but why?
 
 usb_endpoint_t usb_endpoint_bulk_in = {
-	.address = 0x81,
+	.address = USB_ENDPOINT_BULK_IN_ADDRESS,
 	.device = &usb_device,
 	.in = &usb_endpoint_bulk_in,
 	.out = 0,

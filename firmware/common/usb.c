@@ -118,9 +118,14 @@ static void usb_wait_for_endpoint_flushing_to_finish(const uint32_t mask)
 
 static void usb_flush_primed_endpoints(const uint32_t mask)
 {
-	usb_wait_for_endpoint_priming_to_finish(mask);
-	usb_flush_endpoints(mask);
-	usb_wait_for_endpoint_flushing_to_finish(mask);
+	/* UM10503's de-prime procedure requires ENDPTSTAT verification after
+	 * ENDPTFLUSH clears. A packet already in progress may make the controller
+	 * refuse one flush attempt so that the packet can finish safely. */
+	do {
+		usb_wait_for_endpoint_priming_to_finish(mask);
+		usb_flush_endpoints(mask);
+		usb_wait_for_endpoint_flushing_to_finish(mask);
+	} while (USB0_ENDPTSTAT & mask);
 }
 
 static void usb_flush_all_primed_endpoints(void)
@@ -286,10 +291,10 @@ bool usb_endpoint_is_ready(const usb_endpoint_t* const endpoint)
 	}
 }
 
-bool usb_endpoint_is_complete(const usb_endpoint_t* const endpoint)
+bool usb_endpoint_is_complete(const uint_fast8_t endpoint_address)
 {
-	const uint_fast8_t endpoint_number = usb_endpoint_number(endpoint->address);
-	if (usb_endpoint_is_in(endpoint->address)) {
+	const uint_fast8_t endpoint_number = usb_endpoint_number(endpoint_address);
+	if (usb_endpoint_is_in(endpoint_address)) {
 		return USB0_ENDPTCOMPLETE & USB0_ENDPTCOMPLETE_ETCE(1 << endpoint_number);
 	} else {
 		return USB0_ENDPTCOMPLETE & USB0_ENDPTCOMPLETE_ERCE(1 << endpoint_number);

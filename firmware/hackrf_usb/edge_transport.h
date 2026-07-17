@@ -215,6 +215,23 @@ static inline uintptr_t edge_transport_completion_token(
 			slot;
 }
 
+static inline uintptr_t edge_transport_reconcile_usb_completion_token(
+	const edge_transport_state_t* transport,
+	uint32_t completed_bytes,
+	uint32_t expected_bytes,
+	bool completion_observed,
+	bool transfer_error)
+{
+	const uint8_t slot = transport->next_usb_slot ^ 1u;
+	if (!completion_observed || transfer_error || expected_bytes == 0 ||
+	    completed_bytes != expected_bytes ||
+	    slot >= EDGE_TRANSPORT_SLOT_COUNT ||
+	    transport->slots[slot].state != EDGE_TRANSPORT_SLOT_USB) {
+		return 0;
+	}
+	return edge_transport_completion_token(transport, slot);
+}
+
 static inline bool edge_transport_complete_usb(
 	edge_transport_state_t* transport,
 	uintptr_t token,

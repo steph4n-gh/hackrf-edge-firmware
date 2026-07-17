@@ -66,6 +66,8 @@ void usb_endpoint_flush(const usb_endpoint_t* const endpoint);
 
 bool usb_endpoint_is_ready(const usb_endpoint_t* const endpoint);
 
+bool usb_endpoint_is_complete(const uint_fast8_t endpoint_address);
+
 void usb_endpoint_prime(
 	const usb_endpoint_t* const endpoint,
 	usb_transfer_descriptor_t* const first_td);

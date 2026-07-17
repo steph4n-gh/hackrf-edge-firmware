@@ -51,6 +51,60 @@ def main():
 		"usb_set_configuration(device, 0);" in bus_reset,
 		"USB bus reset no longer publishes configuration loss",
 	)
+	usb_isr = function_body(common_usb, "void USB0_ISR_NAME(")
+	require(
+		ordered(
+			usb_isr,
+			"usb_check_for_setup_events();",
+			"usb_check_for_transfer_events();",
+		),
+		"USB control SETUP no longer precedes aborted control completions",
+	)
+
+	request_mode = function_body(transceiver, "void request_transceiver_mode(")
+	require(
+		ordered(
+			request_mode,
+			"usb_endpoint_flush(&usb_endpoint_bulk_in);",
+			"usb_endpoint_is_complete(USB_ENDPOINT_BULK_IN_ADDRESS)",
+			"usb_queue_head(usb_endpoint_bulk_in.address)->total_bytes",
+			"edge_transport_reconcile_usb_completion_token(",
+			"edge_bulk_transfer_complete(",
+			"usb_endpoint_flush(&usb_endpoint_bulk_out);",
+			"edge_transceiver_request_superseded(mode);",
+			"transceiver_request.mode = mode;",
+			"transceiver_request.seq++;",
+		),
+		"OFF does not reconcile a completed Edge bulk-IN frame before reset",
+	)
+	require(
+		"EDGE_FRAME_BYTES,\n\t\t\tbulk_in_completion_observed," in request_mode,
+		"OFF completion reconciliation no longer consumes its COMPLETE witness",
+	)
+	flush_primed = function_body(
+		common_usb, "static void usb_flush_primed_endpoints("
+	)
+	require(
+		ordered(
+			flush_primed,
+			"do {",
+			"usb_wait_for_endpoint_priming_to_finish(mask);",
+			"usb_flush_endpoints(mask);",
+			"usb_wait_for_endpoint_flushing_to_finish(mask);",
+			"} while (USB0_ENDPTSTAT & mask);",
+		),
+		"endpoint flush no longer retries controller-refused de-prime attempts",
+	)
+	for status in (
+		"USB_TD_DTD_TOKEN_STATUS_ACTIVE",
+		"USB_TD_DTD_TOKEN_STATUS_HALTED",
+		"USB_TD_DTD_TOKEN_STATUS_BUFFER_ERROR",
+		"USB_TD_DTD_TOKEN_STATUS_TRANSACTION_ERROR",
+	):
+		require(
+			status in request_mode,
+			f"OFF completion reconciliation ignores {status}",
+		)
 
 	configuration_changed = function_body(
 		hackrf_usb, "void usb_configuration_changed("

@@ -45,6 +45,20 @@ static uintptr_t make_usb_ready(
 	return edge_transport_completion_token(transport, slot);
 }
 
+static bool account_usb_completion(
+	edge_transport_state_t* transport,
+	uintptr_t token,
+	uint32_t* completed_bytes,
+	uint32_t* emitted_samples)
+{
+	if (!edge_transport_complete_usb(transport, token, NULL, NULL)) {
+		return false;
+	}
+	*completed_bytes += 16384;
+	*emitted_samples += 8160;
+	return true;
+}
+
 static void test_static_initializer_is_legacy_safe(void)
 {
 	edge_transport_state_t transport = EDGE_TRANSPORT_STATE_INITIALIZER;
@@ -234,6 +248,75 @@ static void test_schedule_failure_is_retryable(void)
 	assert(!edge_transport_complete_usb(
 		&transport, token, NULL, NULL));
 	assert(edge_transport_usb_candidate(&transport) == 0);
+	assert(edge_transport_invariant(&transport));
+}
+
+static void test_stop_flush_completion_reconciliation(void)
+{
+	edge_transport_state_t transport = {0};
+	uint32_t completed_bytes = 0;
+	uint32_t emitted_samples = 0;
+	uintptr_t token;
+	uintptr_t reconciled;
+
+	/* A normal callback wins before OFF. Reconciliation then sees no USB-owned
+	 * slot and cannot count the frame twice. */
+	edge_transport_reset(&transport, 18);
+	token = make_usb_ready(&transport, 18);
+	edge_transport_usb_schedule_result(&transport, 0, true);
+	assert(account_usb_completion(
+		&transport, token, &completed_bytes, &emitted_samples));
+	assert(edge_transport_reconcile_usb_completion_token(
+		       &transport, 16384, 16384, true, false) == 0);
+	assert(completed_bytes == 16384 && emitted_samples == 8160);
+
+	/* SETUP and bulk completion are co-pending. The post-flush queue-head
+	 * overlay proves the full transfer and recovers the existing token. */
+	token = make_usb_ready(&transport, 18);
+	edge_transport_usb_schedule_result(&transport, 1, true);
+	reconciled = edge_transport_reconcile_usb_completion_token(
+		&transport, 16384, 16384, true, false);
+	assert(reconciled == token);
+	assert(account_usb_completion(
+		&transport, reconciled, &completed_bytes, &emitted_samples));
+	assert(!account_usb_completion(
+		&transport, token, &completed_bytes, &emitted_samples));
+	assert(completed_bytes == 32768 && emitted_samples == 16320);
+
+	/* Hardware may refuse the first flush while a packet is in progress. The
+	 * transport remains owned until a retry proves a complete frame. */
+	edge_transport_reset(&transport, 19);
+	token = make_usb_ready(&transport, 19);
+	edge_transport_usb_schedule_result(&transport, 0, true);
+	assert(edge_transport_reconcile_usb_completion_token(
+		       &transport, 16383, 16384, false, false) == 0);
+	reconciled = edge_transport_reconcile_usb_completion_token(
+		&transport, 16384, 16384, true, false);
+	assert(reconciled == token);
+	assert(account_usb_completion(
+		&transport, reconciled, &completed_bytes, &emitted_samples));
+	assert(!account_usb_completion(
+		&transport, token, &completed_bytes, &emitted_samples));
+	assert(completed_bytes == 49152 && emitted_samples == 24480);
+
+	/* Stale clean overlays, partial, active, or failed transfers are not
+	 * complete Edge frames. Stop invalidates their token and a delayed
+	 * callback remains harmless. */
+	edge_transport_reset(&transport, 20);
+	token = make_usb_ready(&transport, 20);
+	edge_transport_usb_schedule_result(&transport, 0, true);
+	assert(edge_transport_reconcile_usb_completion_token(
+		       &transport, 16384, 16384, false, false) == 0);
+	assert(edge_transport_reconcile_usb_completion_token(
+		       &transport, 16383, 16384, true, false) == 0);
+	assert(edge_transport_reconcile_usb_completion_token(
+		       &transport, 16384, 16384, true, true) == 0);
+	assert(edge_transport_reconcile_usb_completion_token(
+		       &transport, 0, 0, true, false) == 0);
+	edge_transport_reset(&transport, 20);
+	assert(!account_usb_completion(
+		&transport, token, &completed_bytes, &emitted_samples));
+	assert(completed_bytes == 49152 && emitted_samples == 24480);
 	assert(edge_transport_invariant(&transport));
 }
 
@@ -547,6 +630,7 @@ int main(void)
 	test_invalid_dma_completion_is_abandoned();
 	test_pipeline_and_queue_ownership();
 	test_schedule_failure_is_retryable();
+	test_stop_flush_completion_reconciliation();
 	test_stale_completion_cannot_release_reused_slot();
 	test_stale_completion_cannot_release_same_epoch_slot_reuse();
 	test_reset_invalidates_usb_ownership_and_preserves_nonce();

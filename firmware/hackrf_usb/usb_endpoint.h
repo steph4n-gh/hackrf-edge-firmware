@@ -26,6 +26,8 @@
 #include <usb_queue.h>
 #include <usb_type.h>
 
+#define USB_ENDPOINT_BULK_IN_ADDRESS 0x81u
+
 extern usb_endpoint_t usb_endpoint_control_out;
 extern USB_DECLARE_QUEUE(usb_endpoint_control_out);
 

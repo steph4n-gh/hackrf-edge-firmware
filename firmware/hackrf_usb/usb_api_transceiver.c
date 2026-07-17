@@ -77,6 +77,16 @@ static uint32_t edge_previous_shortfall_count;
 static bool edge_quarantine_pending;
 static uint32_t edge_activation_epoch;
 
+static void edge_bulk_transfer_complete(void* user_data, unsigned int bytes_transferred);
+
+static inline unsigned int flushed_transfer_completed_length(uint32_t qh_token)
+{
+	const unsigned int remaining =
+		(qh_token & USB_TD_DTD_TOKEN_TOTAL_BYTES_MASK) >>
+		USB_TD_DTD_TOKEN_TOTAL_BYTES_SHIFT;
+	return USB_TRANSFER_SIZE - remaining;
+}
+
 static void edge_clear_dma_progress(void)
 {
 	edge_dma_source_offset = 0;
@@ -381,6 +391,25 @@ void transceiver_usb_setup_complete(usb_endpoint_t* const endpoint)
 void request_transceiver_mode(transceiver_mode_t mode)
 {
 	usb_endpoint_flush(&usb_endpoint_bulk_in);
+	const bool bulk_in_completion_observed =
+		usb_endpoint_is_complete(USB_ENDPOINT_BULK_IN_ADDRESS);
+	const uint32_t bulk_in_qh_token =
+		usb_queue_head(usb_endpoint_bulk_in.address)->total_bytes;
+	const uintptr_t edge_completion_token =
+		edge_transport_reconcile_usb_completion_token(
+			&edge_transport,
+			flushed_transfer_completed_length(bulk_in_qh_token),
+			EDGE_FRAME_BYTES,
+			bulk_in_completion_observed,
+			(bulk_in_qh_token &
+			 (USB_TD_DTD_TOKEN_STATUS_ACTIVE |
+			  USB_TD_DTD_TOKEN_STATUS_HALTED |
+			  USB_TD_DTD_TOKEN_STATUS_BUFFER_ERROR |
+			  USB_TD_DTD_TOKEN_STATUS_TRANSACTION_ERROR)) != 0);
+	if (edge_completion_token != 0) {
+		edge_bulk_transfer_complete(
+			(void*) edge_completion_token, EDGE_FRAME_BYTES);
+	}
 	usb_endpoint_flush(&usb_endpoint_bulk_out);
 
 	edge_transceiver_request_superseded(mode);
@@ -1119,13 +1148,9 @@ void tx_mode(uint32_t seq)
 		// can retrieve the partial byte count from the transfer
 		// overlay in the endpoint queue head (dQH) (UM10503 25.9.1).
 
-		usb_queue_head_t* const qh =
-			usb_queue_head(usb_endpoint_bulk_out.address);
-		unsigned int bytes_remaining =
-			(qh->total_bytes & USB_TD_DTD_TOKEN_TOTAL_BYTES_MASK) >>
-			USB_TD_DTD_TOKEN_TOTAL_BYTES_SHIFT;
-		unsigned int bytes_transferred = USB_TRANSFER_SIZE - bytes_remaining;
-		usb_completed += bytes_transferred;
+		const uint32_t qh_token =
+			usb_queue_head(usb_endpoint_bulk_out.address)->total_bytes;
+		usb_completed += flushed_transfer_completed_length(qh_token);
 	}
 
 	// Feed the remaining data from the bulk buffer to the sample buffer.
