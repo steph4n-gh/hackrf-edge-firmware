@@ -33,7 +33,7 @@
 #include <string.h>
 
 #define MOCK_DEVICE_COUNT 4
-#define HARDWARE_SERIAL   "000000000000000087c867dc2985255f"
+#define HARDWARE_SERIAL   "0000000000000000123456789abcdef0"
 #define IAP_REQUEST       18
 
 #define CHECK(condition)                                     \
@@ -127,7 +127,7 @@ static void set_serial_words(mock_device_t* device, uint32_t final_word)
 {
 	device->serial_words[0] = 0x00000000u;
 	device->serial_words[1] = 0x00000000u;
-	device->serial_words[2] = 0x87c867dcu;
+	device->serial_words[2] = 0x12345678u;
 	device->serial_words[3] = final_word;
 }
 
@@ -153,7 +153,7 @@ static void reset_mocks(int device_count)
 		mock_devices[i].descriptor_serial = "RunningFromRAM";
 		mock_devices[i].string_result = 14;
 		mock_devices[i].iap_result = (int) sizeof(read_partid_serialno_t);
-		set_serial_words(&mock_devices[i], 0x2985255fu);
+		set_serial_words(&mock_devices[i], 0x9abcdef0u);
 		mock_device_list[i] = mock_device_pointer(i);
 	}
 }

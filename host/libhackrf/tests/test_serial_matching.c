@@ -46,7 +46,7 @@
 static void test_suffix_semantics(void)
 {
 	char serial_number[HACKRF_USB_MAX_SERIAL_LENGTH + 1] =
-		"000000000000000087c867dc2985255f";
+		"0000000000000000123456789abcdef0";
 	int serial_number_length;
 
 	serial_number_length = hackrf_usb_serial_prepare(
@@ -57,12 +57,12 @@ static void test_suffix_semantics(void)
 	CHECK(hackrf_usb_serial_suffix_matches(
 		serial_number,
 		serial_number_length,
-		"000000000000000087c867dc2985255f",
+		"0000000000000000123456789abcdef0",
 		32u));
 	CHECK(hackrf_usb_serial_suffix_matches(
 		serial_number,
 		serial_number_length,
-		"2985255f",
+		"9abcdef0",
 		8u));
 	CHECK(hackrf_usb_serial_suffix_matches(
 		serial_number,
@@ -126,8 +126,8 @@ static void test_ram_descriptor_falls_back_to_iap_identity(void)
 	const uint32_t serial_words[4] = {
 		0x00000000u,
 		0x00000000u,
-		0x87c867dcu,
-		0x2985255fu,
+		0x12345678u,
+		0x9abcdef0u,
 	};
 	char descriptor[15] = "RunningFromRAM";
 	char hardware_serial[HACKRF_USB_MAX_SERIAL_LENGTH + 1];
@@ -138,7 +138,7 @@ static void test_ram_descriptor_falls_back_to_iap_identity(void)
 	CHECK(!hackrf_usb_serial_suffix_matches(
 		descriptor,
 		descriptor_length,
-		"000000000000000087c867dc2985255f",
+		"0000000000000000123456789abcdef0",
 		32u));
 
 	hardware_serial_length = hackrf_usb_serial_format_iap(
@@ -146,11 +146,11 @@ static void test_ram_descriptor_falls_back_to_iap_identity(void)
 		sizeof(hardware_serial),
 		serial_words);
 	CHECK(hardware_serial_length == HACKRF_USB_MAX_SERIAL_LENGTH);
-	CHECK(strcmp(hardware_serial, "000000000000000087c867dc2985255f") == 0);
+	CHECK(strcmp(hardware_serial, "0000000000000000123456789abcdef0") == 0);
 	CHECK(hackrf_usb_serial_suffix_matches(
 		hardware_serial,
 		hardware_serial_length,
-		"2985255f",
+		"9abcdef0",
 		8u));
 }
 
