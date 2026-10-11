@@ -1,3 +1,21 @@
+# HackRF Edge firmware and libhackrf component
+
+This repository is the [HackRF Edge](https://github.com/steph4n-gh/hackrf-edge)
+fork of [portapack-mayhem/hackrf](https://github.com/portapack-mayhem/hackrf).
+For the Edge release's exact source commit, artifact checksums, supported
+hardware, and installation procedure, use the [release
+manifest](https://github.com/steph4n-gh/hackrf-edge/blob/main/manifests/v0.1.0-alpha.1.json)
+and [installation guide](https://github.com/steph4n-gh/hackrf-edge/blob/main/docs/installation.md).
+The Edge release assets are published by the hub repository, not this
+component fork.
+
+The upstream HackRF README follows. Its documentation, help channels, and
+response-time statements describe the upstream HackRF project; they are not
+support commitments from the HackRF Edge fork. For Edge-specific questions,
+see the [project support guide](https://github.com/steph4n-gh/hackrf-edge/blob/main/SUPPORT.md).
+
+---
+
 # HackRF
 
 This repository contains hardware designs and software for HackRF,
